@@ -21,7 +21,7 @@ n8n 工作流执行时报错：`python: not found`
 ```json
 {
   "command": "python",
-  "arguments": "/path/to/mailbox/mailbox monitor run --json"
+  "arguments": "/path/to/mail-use/mail-use monitor run --json"
 }
 ```
 
@@ -29,7 +29,7 @@ n8n 工作流执行时报错：`python: not found`
 ```json
 {
   "command": "uv",
-  "arguments": "/path/to/mailbox/mailbox monitor run --json"
+  "arguments": "/path/to/mail-use/mail-use monitor run --json"
 }
 ```
 
@@ -61,7 +61,7 @@ n8n 工作流执行时报错：`python: not found`
 ```json
 {
   "command": "/usr/bin/python3",
-  "arguments": "/path/to/mailbox/mailbox monitor run --json"
+  "arguments": "/path/to/mail-use/mail-use monitor run --json"
 }
 ```
 

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { paths } = require("@mailbox/shared");
+const { paths } = require("@mail-use/shared");
 const { resolveAccountConnectionConfig } = require("./provider_defaults");
 
 function _readJsonFile(p) {

@@ -7,13 +7,13 @@ import fs from "node:fs";
 import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const contract = require("@mailbox/shared/src/contract.js");
+const contract = require("@mail-use/shared/src/contract.js");
 
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("extractCodes (verification/OTP heuristic)", () => {
@@ -68,7 +68,7 @@ describe("email show --extract-code wires codes onto the result", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "show", "101", "--account-id", "mock_acc", "--extract-code", "--format", "compact"],
+      [cliBin(), "email", "show", "101", "--account-id", "mock_acc", "--extract-code", "--format", "compact"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

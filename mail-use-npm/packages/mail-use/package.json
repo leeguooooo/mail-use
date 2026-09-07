@@ -1,9 +1,9 @@
 {
-  "name": "@leeguoo/mailbox-cli",
+  "name": "@leeguoo/mail-use",
   "version": "0.0.0",
-  "description": "Mailbox CLI (binary distribution)",
+  "description": "mail-use CLI (binary distribution)",
   "keywords": [
-    "mailbox",
+    "mail-use",
     "email",
     "imap",
     "smtp",
@@ -25,20 +25,21 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/leeguooooo/Mailbox"
+    "url": "https://github.com/leeguooooo/mail-use"
   },
   "publishConfig": {
     "access": "public"
   },
   "bin": {
-    "mailbox": "bin/mailbox.js"
+    "mail-use": "bin/mail-use.js",
+    "mailbox": "bin/mail-use.js"
   },
   "files": [
     "bin/"
   ],
   "optionalDependencies": {
-    "@leeguoo/mailbox-cli-darwin-arm64": "0.0.0",
-    "@leeguoo/mailbox-cli-darwin-x64": "0.0.0",
-    "@leeguoo/mailbox-cli-linux-x64-gnu": "0.0.0"
+    "@leeguoo/mail-use-darwin-arm64": "0.0.0",
+    "@leeguoo/mail-use-darwin-x64": "0.0.0",
+    "@leeguoo/mail-use-linux-x64-gnu": "0.0.0"
   }
 }

@@ -43,10 +43,10 @@ jobs:
 
       # Bake the real version into the binary via packages/cli/src/_version.js.
       # NOTE: do NOT use scripts/set_release_version.js here — it rewrites the
-      # mailbox-cli/packages/* versions and breaks `pnpm install --frozen-lockfile`
+      # mail-use-npm/packages/* versions and breaks `pnpm install --frozen-lockfile`
       # inside build:binary. _version.js is a plain JS module (not a package.json),
       # so stamping it has no lockfile impact and pkg bundles it statically.
-      - name: Bake CLI version (for `mailbox --version`)
+      - name: Bake CLI version (for `mail-use --version`)
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +57,7 @@ jobs:
             *) echo "ref '$GITHUB_REF_NAME' is not a vX.Y.Z tag; leaving default" ;;
           esac
 
-      - name: Build mailbox binary
+      - name: Build mail-use binary
         run: pnpm build:binary
 
       - name: Package artifact
@@ -65,13 +65,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          tar -czf "out/mailbox-${{ matrix.target }}.tar.gz" -C dist mailbox
-          shasum -a 256 "out/mailbox-${{ matrix.target }}.tar.gz" > "out/mailbox-${{ matrix.target }}.tar.gz.sha256"
+          tar -czf "out/mail-use-${{ matrix.target }}.tar.gz" -C dist mail-use
+          shasum -a 256 "out/mail-use-${{ matrix.target }}.tar.gz" > "out/mail-use-${{ matrix.target }}.tar.gz.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mailbox-${{ matrix.target }}
+          name: mail-use-${{ matrix.target }}
           path: out/*
 
   release:
@@ -91,5 +91,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            out/**/mailbox-*.tar.gz
-            out/**/mailbox-*.tar.gz.sha256
+            out/**/mail-use-*.tar.gz
+            out/**/mail-use-*.tar.gz.sha256

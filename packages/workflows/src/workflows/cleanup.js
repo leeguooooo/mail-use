@@ -8,7 +8,7 @@
 // Protected categories (finance / travel / security / support) are never
 // proposed for deletion.
 
-const { email } = require("@mailbox/core");
+const { email } = require("@mail-use/core");
 const { classify, PROTECTED, CLEANUP } = require("./classify");
 
 function _iso() {

@@ -9,7 +9,7 @@ function smokeTestInput() {
       params: {
         protocolVersion: "2024-11-05",
         capabilities: {},
-        clientInfo: { name: "mailbox-release-smoke-test", version: "1" },
+        clientInfo: { name: "mail-use-release-smoke-test", version: "1" },
       },
     },
     { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
@@ -51,7 +51,7 @@ function runMcpSmokeTest(binaryPath, { timeoutMs = 30_000 } = {}) {
 
   const responses = parseMcpResponses(child.stdout);
   const initialized = responses.find((response) => response.id === 1);
-  if (!initialized || initialized.error || initialized.result?.serverInfo?.name !== "mailbox") {
+  if (!initialized || initialized.error || initialized.result?.serverInfo?.name !== "mail-use") {
     throw new Error("MCP smoke test did not receive a valid initialize response");
   }
 

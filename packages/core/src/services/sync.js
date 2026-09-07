@@ -1,6 +1,6 @@
 const fs = require("fs");
 
-const { paths } = require("@mailbox/shared");
+const { paths } = require("@mail-use/shared");
 const accounts = require("./accounts");
 const syncDb = require("../storage/sync_db");
 

@@ -8,8 +8,8 @@ import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("WP-I: recent command + discoverability", () => {
@@ -19,7 +19,7 @@ describe("WP-I: recent command + discoverability", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "email", "recent", "--live", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "email", "recent", "--live", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload.success).toBe(true);
@@ -33,7 +33,7 @@ describe("WP-I: recent command + discoverability", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "email", "recent", "--live", "--since", "2030-01-01", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "email", "recent", "--live", "--since", "2030-01-01", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     expect(JSON.parse(r.stdout).emails.length).toBe(0);
   });
@@ -46,7 +46,7 @@ describe("WP-I: recent command + discoverability", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "all", "--account-id", "mock_acc", "--live", "--json"],
+      [cliBin(), "email", "list", "--folder", "all", "--account-id", "mock_acc", "--live", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

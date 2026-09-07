@@ -1,10 +1,10 @@
-# mailbox-cli
+# mail-use
 
 Install:
 
 ```bash
-npm i -g @leeguoo/mailbox-cli
-mailbox --help
+npm i -g @leeguoo/mail-use
+mail-use --help
 ```
 
 Config:

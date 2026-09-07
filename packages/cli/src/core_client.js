@@ -1,4 +1,4 @@
-// Transparent core proxy: each call routes through the mailbox daemon's
+// Transparent core proxy: each call routes through the mail-use daemon's
 // Unix socket if one is reachable, otherwise falls back to the original
 // in-process implementation. Lets every existing action in main.js keep
 // calling `email.searchEmails(args)` etc. without knowing whether a
@@ -6,9 +6,9 @@
 
 const net = require("net");
 const fs = require("fs");
-const realCore = require("@mailbox/core");
+const realCore = require("@mail-use/core");
 const realWorkflows = (() => {
-  try { return require("@mailbox/workflows"); } catch { return {}; }
+  try { return require("@mail-use/workflows"); } catch { return {}; }
 })();
 const { getSocketPath } = require("./daemon");
 
@@ -196,7 +196,7 @@ function _wrapNamespace(nsName, realObj) {
             // in-process: the daemon may have already performed the work
             // and we'd execute it twice. Surface the failure instead.
             if (isMutator && !isDryRun) {
-              if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mailbox: daemon call ${fullName} failed: ${msg}; refusing fallback for mutating call\n`);
+              if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mail-use: daemon call ${fullName} failed: ${msg}; refusing fallback for mutating call\n`);
               return {
                 success: false,
                 error: `daemon RPC failed for ${fullName}: ${msg}. Refusing to fall back to direct execution because it may have already mutated state. Re-check before retrying.`,
@@ -204,7 +204,7 @@ function _wrapNamespace(nsName, realObj) {
                 daemon_rpc_failed: true,
               };
             }
-            if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mailbox: daemon call ${fullName} failed: ${msg}; falling back to direct\n`);
+            if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mail-use: daemon call ${fullName} failed: ${msg}; falling back to direct\n`);
           }
         }
         return direct.apply(realObj, callArgs);

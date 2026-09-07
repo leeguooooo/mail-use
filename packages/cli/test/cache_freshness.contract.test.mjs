@@ -7,13 +7,13 @@ import fs from "node:fs";
 import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const syncDb = require("@mailbox/core/src/storage/sync_db.js");
+const syncDb = require("@mail-use/core/src/storage/sync_db.js");
 
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 // Seed a fresh-but-empty INBOX cache snapshot so a cached read returns 0 rows
@@ -44,7 +44,7 @@ describe("cache freshness survives --format compact (P1/P2)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "recent", "--account-id", "mock_acc", "--limit", "8", "--format", "compact", "--json"],
+      [cliBin(), "email", "recent", "--account-id", "mock_acc", "--limit", "8", "--format", "compact", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -66,7 +66,7 @@ describe("cache freshness survives --format compact (P1/P2)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "recent", "--account-id", "mock_acc", "--limit", "8", "--live", "--format", "compact", "--json"],
+      [cliBin(), "email", "recent", "--account-id", "mock_acc", "--limit", "8", "--live", "--format", "compact", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

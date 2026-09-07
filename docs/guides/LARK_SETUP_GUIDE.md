@@ -34,10 +34,10 @@ python scripts/daily_email_digest.py run
 
 ```bash
 # 每 5 分钟检查邮件
-*/5 * * * * cd /path/to/mailbox && mailbox monitor run --json
+*/5 * * * * cd /path/to/mail-use && mail-use monitor run --json
 
 # 每天 08:30 发送汇总
-30 8 * * * cd /path/to/mailbox && mailbox digest run --json
+30 8 * * * cd /path/to/mail-use && mail-use digest run --json
 ```
 
 ## 📱 飞书通知效果

@@ -27,33 +27,23 @@ importers:
         specifier: ^24.2.1
         version: 24.2.9
 
-  mailbox-cli/packages/mailbox-cli:
-    optionalDependencies:
-      '@leeguoo/mailbox-cli-darwin-arm64':
-        specifier: 0.0.0
-        version: link:../mailbox-cli-darwin-arm64
-      '@leeguoo/mailbox-cli-darwin-x64':
-        specifier: 0.0.0
-        version: link:../mailbox-cli-darwin-x64
-      '@leeguoo/mailbox-cli-linux-x64-gnu':
-        specifier: 0.0.0
-        version: link:../mailbox-cli-linux-x64-gnu
+  mail-use-npm/packages/mail-use: {}
 
-  mailbox-cli/packages/mailbox-cli-darwin-arm64: {}
+  mail-use-npm/packages/mail-use-darwin-arm64: {}
 
-  mailbox-cli/packages/mailbox-cli-darwin-x64: {}
+  mail-use-npm/packages/mail-use-darwin-x64: {}
 
-  mailbox-cli/packages/mailbox-cli-linux-x64-gnu: {}
+  mail-use-npm/packages/mail-use-linux-x64-gnu: {}
 
   packages/cli:
     dependencies:
-      '@mailbox/core':
+      '@mail-use/core':
         specifier: workspace:*
         version: link:../core
-      '@mailbox/shared':
+      '@mail-use/shared':
         specifier: workspace:*
         version: link:../shared
-      '@mailbox/workflows':
+      '@mail-use/workflows':
         specifier: workspace:*
         version: link:../workflows
       '@modelcontextprotocol/sdk':
@@ -78,7 +68,7 @@ importers:
 
   packages/core:
     dependencies:
-      '@mailbox/shared':
+      '@mail-use/shared':
         specifier: workspace:*
         version: link:../shared
       imapflow:
@@ -106,10 +96,10 @@ importers:
 
   packages/workflows:
     dependencies:
-      '@mailbox/core':
+      '@mail-use/core':
         specifier: workspace:*
         version: link:../core
-      '@mailbox/shared':
+      '@mail-use/shared':
         specifier: workspace:*
         version: link:../shared
 

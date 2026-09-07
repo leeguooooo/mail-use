@@ -8,8 +8,8 @@ import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("review-fix: <unknown> --help --json must not falsely report success", () => {
@@ -19,7 +19,7 @@ describe("review-fix: <unknown> --help --json must not falsely report success", 
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "definitely-not-a-command", "--help", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "definitely-not-a-command", "--help", "--json"], { reject: false, env });
     const payload = JSON.parse(r.stdout);
     expect(payload.success).toBe(false);
     expect(payload.error_code).toBe("invalid_argument");
@@ -32,7 +32,7 @@ describe("review-fix: <unknown> --help --json must not falsely report success", 
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "cleanup", "--help", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "cleanup", "--help", "--json"], { reject: false, env });
     const payload = JSON.parse(r.stdout);
     expect(payload.success).toBe(true);
     expect(payload.help.name).toBe("cleanup");
@@ -45,7 +45,7 @@ describe("review-fix: <unknown> --help --json must not falsely report success", 
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
     // `email show 101` — 101 is an argument to show, not an unknown command.
-    const r = await execa("node", [mailboxBin(), "email", "show", "101", "--help", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "email", "show", "101", "--help", "--json"], { reject: false, env });
     const payload = JSON.parse(r.stdout);
     expect(payload.success).toBe(true);
     expect(payload.help.name).toBe("show");

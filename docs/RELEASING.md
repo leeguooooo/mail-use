@@ -1,9 +1,9 @@
-# Releasing (mailbox + mailbox-cli)
+# Releasing (mail-use + mail-use)
 
 This project ships:
 
-1) A standalone `mailbox` binary (built from this repo)
-2) An npm package `@leeguoo/mailbox-cli` that installs `mailbox` (binary distribution)
+1) A standalone `mail-use` binary (built from this repo)
+2) An npm package `@leeguoo/mail-use` that installs `mail-use` (binary distribution)
 
 ## Automated release (recommended)
 
@@ -11,7 +11,7 @@ Releases are created automatically from `main` using semantic-release.
 
 Requirements:
 - Conventional Commit messages (`feat:`, `fix:`, etc.)
-- Do **not** manually bump package versions in `mailbox-cli/packages/*`
+- Do **not** manually bump package versions in `mail-use-npm/packages/*`
   (keep them at `0.0.0`). The CI publish job sets real versions at release
   time via `scripts/set_release_version.js`.
 - Set repository secret `RELEASE_TOKEN` (a PAT with `repo` + `workflow` scopes)
@@ -27,7 +27,7 @@ If no release-worthy commits are found, semantic-release exits without tagging.
 
 ## Manual release (fallback)
 
-## 1) Build + publish `mailbox` binaries
+## 1) Build + publish `mail-use` binaries
 
 Create a tag (only if you are not using semantic-release):
 
@@ -39,24 +39,24 @@ git push origin vX.Y.Z
 GitHub Actions workflow `release-binaries` will build and attach artifacts to a
 GitHub Release:
 
-- `mailbox-darwin-arm64.tar.gz`
-- `mailbox-darwin-x64.tar.gz`
-- `mailbox-linux-x64-gnu.tar.gz`
+- `mail-use-darwin-arm64.tar.gz`
+- `mail-use-darwin-x64.tar.gz`
+- `mail-use-linux-x64-gnu.tar.gz`
 
 Each has a matching `.sha256` file.
 
-## 2) Publish `@leeguoo/mailbox-cli` to npm
+## 2) Publish `@leeguoo/mail-use` to npm
 
-The Node project lives under `mailbox-cli/`.
+The Node project lives under `mail-use-npm/`.
 
 Publishing model:
 
-- `@leeguoo/mailbox-cli` main package depends on platform packages:
-  - `@leeguoo/mailbox-cli-darwin-arm64`
-  - `@leeguoo/mailbox-cli-darwin-x64`
-  - `@leeguoo/mailbox-cli-linux-x64-gnu`
+- `@leeguoo/mail-use` main package depends on platform packages:
+  - `@leeguoo/mail-use-darwin-arm64`
+  - `@leeguoo/mail-use-darwin-x64`
+  - `@leeguoo/mail-use-linux-x64-gnu`
 
-Each platform package bundles a `bin/mailbox` executable.
+Each platform package bundles a `bin/mail-use` executable.
 
 Release pipeline (automated):
 
@@ -69,39 +69,39 @@ Required secret:
 Flow:
 
 1. Push a tag `vX.Y.Z`.
-2. CI builds the `mailbox` binary on each target OS.
-3. CI injects the binary into each platform package `bin/mailbox`.
+2. CI builds the `mail-use` binary on each target OS.
+3. CI injects the binary into each platform package `bin/mail-use`.
 4. CI sets `package.json` versions to `X.Y.Z` (platform packages + launcher).
-5. CI publishes platform packages first, then publishes `@leeguoo/mailbox-cli`.
+5. CI publishes platform packages first, then publishes `@leeguoo/mail-use`.
 
 Workflow:
 
 - `.github/workflows/publish-npm.yml`
 
-Note: the `mailbox-cli/` directory is intended to become its own repo.
+Note: the `mail-use-npm/` directory is intended to become its own repo.
 
 ### Required files in each platform package
 
 Each platform package must contain:
 
-- `bin/mailbox` (executable)
+- `bin/mail-use` (executable)
 - `index.js` exporting `binaryPath`
 
-The launcher package `@leeguoo/mailbox-cli` resolves the correct platform package and
+The launcher package `@leeguoo/mail-use` resolves the correct platform package and
 executes `binaryPath`.
 
 ### Artifact naming convention
 
 `release-binaries` uploads:
 
-- `mailbox-darwin-arm64.tar.gz`
-- `mailbox-darwin-x64.tar.gz`
-- `mailbox-linux-x64-gnu.tar.gz`
+- `mail-use-darwin-arm64.tar.gz`
+- `mail-use-darwin-x64.tar.gz`
+- `mail-use-linux-x64-gnu.tar.gz`
 
-These tarballs contain a single file: `mailbox`.
+These tarballs contain a single file: `mail-use`.
 
 The npm release pipeline should:
 
 1. Download the tarball matching the platform package.
-2. Extract `mailbox` into `packages/<platform>/bin/mailbox`.
+2. Extract `mail-use` into `packages/<platform>/bin/mail-use`.
 3. Ensure unix executable bit is set (chmod +x).

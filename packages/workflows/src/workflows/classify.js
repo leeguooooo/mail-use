@@ -67,7 +67,7 @@ function loadRules() {
   if (_cachedRules) return _cachedRules;
   let rules = DEFAULT_RULES;
   try {
-    const { paths } = require("@mailbox/shared");
+    const { paths } = require("@mail-use/shared");
     const cfg = paths.getPathConfig();
     const file = path.join(cfg.configDir, "cleanup_rules.json");
     if (fs.existsSync(file)) {

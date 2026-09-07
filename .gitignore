@@ -59,9 +59,9 @@ ENV/
 /thoughts/
 /clients/desktop-app/
 
-# Prebuilt mailbox-cli binaries (generated)
+# Prebuilt mail-use binaries (generated)
 # Platform packages only (do NOT ignore the launcher JS bin).
-/mailbox-cli/packages/mailbox-cli-*/bin/
+/mail-use-npm/packages/mail-use-*/bin/
 /dist/
 
 # Node tests temp fixtures

@@ -1,4 +1,4 @@
-// MCP server: exposes mailbox CLI capabilities as Model Context Protocol
+// MCP server: exposes mail-use CLI capabilities as Model Context Protocol
 // tools so that AI clients (Claude Desktop, Claude Code, Cursor, etc.)
 // can call them directly without shelling out to the CLI.
 //
@@ -9,7 +9,7 @@
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
-const { contract } = require("@mailbox/shared");
+const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
 
 const { accounts, email, sync, digest, monitor, inbox, cleanup } = makeProxies();
@@ -36,7 +36,7 @@ function _toolResult(result, leanByDefault = true) {
 
 function buildServer() {
   const server = new McpServer({
-    name: "mailbox",
+    name: "mail-use",
     version: "0.1.0",
   });
 
@@ -44,7 +44,7 @@ function buildServer() {
 
   server.registerTool("account_list", {
     title: "List configured email accounts",
-    description: "Returns every account known to mailbox: id, email, provider (gmail/qq/163/outlook/...), IMAP/SMTP host. Use the returned `id` as account_id in other tools.",
+    description: "Returns every account known to mail-use: id, email, provider (gmail/qq/163/outlook/...), IMAP/SMTP host. Use the returned `id` as account_id in other tools.",
     inputSchema: {},
   }, async () => _toolResult(await accounts.listAccounts()));
 

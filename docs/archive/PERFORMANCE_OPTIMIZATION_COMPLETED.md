@@ -259,8 +259,8 @@ python scripts/init_sync.py
 python -m src.operations.sync_scheduler &
 
 # 或使用 systemd
-sudo systemctl enable mailbox-sync
-sudo systemctl start mailbox-sync
+sudo systemctl enable mail-use-sync
+sudo systemctl start mail-use-sync
 ```
 
 ---

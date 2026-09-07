@@ -1,6 +1,6 @@
 # Architecture
 
-Mailbox is a CLI-first Node.js project.
+mail-use is a CLI-first Node.js project.
 
 Core goals:
 
@@ -17,6 +17,6 @@ Modules:
 
 Distribution:
 
-- The user-facing install is `mailbox-cli` (npm launcher + platform packages).
-- The platform packages ship a prebuilt `mailbox` binary (built from Node via
+- The user-facing install is `mail-use` (npm launcher + platform packages).
+- The platform packages ship a prebuilt `mail-use` binary (built from Node via
   `pkg`).

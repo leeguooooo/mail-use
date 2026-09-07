@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { Command } = require("commander");
 
-const { contract } = require("@mailbox/shared");
+const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
 // All calls into core/workflows go through these proxies. When a mailbox
 // daemon is running, requests are forwarded over a Unix socket so we
@@ -717,7 +717,7 @@ async function main(argv) {
   }
 
   const program = new Command();
-  program.name("mailbox");
+  program.name("mail-use");
   program.version(_resolveCliVersion(), "-v, --version", "output the version");
   program.exitOverride();
   // Suppress commander's default "error: ..." stderr line — we surface the
@@ -838,7 +838,7 @@ async function main(argv) {
       // a cross-folder request so the user knows to reach for 'email search'.
       if (opts.folder && String(opts.folder).toLowerCase() !== "inbox") {
         process.stderr.write(
-          `mailbox: 'email list' is INBOX-only; folder "${opts.folder}" was treated as INBOX. ` +
+          `mail-use: 'email list' is INBOX-only; folder "${opts.folder}" was treated as INBOX. ` +
             `Use 'email search --folder ${opts.folder}' for cross-folder.\n`
         );
       }
@@ -1494,7 +1494,7 @@ async function main(argv) {
     .description("Continuously print sync status")
     .option("--interval <seconds>", "Refresh interval", "5")
     .action(async (opts) => {
-      const { printJson } = require("@mailbox/shared").json;
+      const { printJson } = require("@mail-use/shared").json;
       const intervalSec = Math.max(0.5, Number(opts.interval || 5));
       const stop = _createStopSignal();
       try {
@@ -1701,7 +1701,7 @@ async function main(argv) {
       const { installAutostart } = require("./daemon");
       const result = await installAutostart({ syncIntervalSec: Number(opts.syncInterval || 300) });
       const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => {
-        if (r.success) process.stdout.write(`installed: ${r.unit_path}\n  next: ${r.activate_hint || "(start it now with: mailbox daemon start)"}\n`);
+        if (r.success) process.stdout.write(`installed: ${r.unit_path}\n  next: ${r.activate_hint || "(start it now with: mail-use daemon start)"}\n`);
         else process.stderr.write((r.error || "install failed") + "\n");
       } });
       process.exit(rc);
@@ -1821,14 +1821,14 @@ async function main(argv) {
     .description("Print a sample MCP client config snippet for Claude Desktop / Code")
     .action(() => {
       // #22：装机版是 pkg 单文件二进制，process.argv[1] 是 snapshot 内的虚拟路径
-      // （/snapshot/Mailbox/packages/cli/bin/mailbox.js），在用户机器上并不存在——照着这份
-      // config 配的客户端一定起不来。二进制里 execPath 就是 `mailbox` 自己，直接带子命令即可。
+      // （/snapshot/Mailbox/packages/cli/bin/mail-use.js），在用户机器上并不存在——照着这份
+      // config 配的客户端一定起不来。二进制里 execPath 就是 `mail-use` 自己，直接带子命令即可。
       const packaged = process.pkg !== undefined;
       const cfg = {
         mcpServers: {
-          mailbox: {
+          "mail-use": {
             command: process.execPath,
-            args: packaged ? ["mcp", "serve"] : [process.argv[1] || "mailbox", "mcp", "serve"],
+            args: packaged ? ["mcp", "serve"] : [process.argv[1] || "mail-use", "mcp", "serve"],
           },
         },
       };
@@ -1895,7 +1895,7 @@ async function main(argv) {
   }
 
   try {
-    await program.parseAsync(["node", "mailbox", ...parsed.argv]);
+    await program.parseAsync(["node", "mail-use", ...parsed.argv]);
     return 0;
   } catch (err) {
     if (

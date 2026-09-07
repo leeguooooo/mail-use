@@ -1,4 +1,4 @@
-const { email } = require("@mailbox/core");
+const { email } = require("@mail-use/core");
 
 function _iso() {
   return new Date().toISOString();

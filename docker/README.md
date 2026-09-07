@@ -2,7 +2,7 @@
 
 本目录为旧 Python/HTTP API 时代的 Docker 配置备份。
 
-Node CLI 重写后，推荐使用 npm 安装 `mailbox-cli` 并运行 `mailbox`。
+Node CLI 重写后，推荐使用 npm 安装 `mail-use` 并运行 `mail-use`。
 
 该目录内容暂不维护，后续可能移除。
 
@@ -18,23 +18,23 @@ Node CLI 重写后，推荐使用 npm 安装 `mailbox-cli` 并运行 `mailbox`�
 
 ```bash
 # 使用优化版本（推荐）
-docker build -f docker/Dockerfile.optimized -t mailbox:latest .
+docker build -f docker/Dockerfile.optimized -t mail-use:latest .
 
 # 使用可选版本
-docker build -f docker/Dockerfile.optional -t mailbox:optional .
+docker build -f docker/Dockerfile.optional -t mail-use:optional .
 ```
 
 ### 运行容器
 
 ```bash
 docker run -d \
-  --name mailbox \
+  --name mail-use \
   -v $(pwd)/accounts.json:/app/accounts.json \
   -v $(pwd)/sync_config.json:/app/sync_config.json \
   -p 18888:18888 \
   -e OPENAI_API_KEY="your-key" \
   -e API_SECRET_KEY="your-secret" \
-  mailbox:latest
+  mail-use:latest
 ```
 
 ## 📝 环境变量

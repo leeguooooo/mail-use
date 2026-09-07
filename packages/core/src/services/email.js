@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { paths } = require("@mailbox/shared");
+const { paths } = require("@mail-use/shared");
 
 const accounts = require("./accounts");
 const { withImapClient } = require("./imap");
@@ -209,7 +209,7 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
         // failure as an explicit field so callers can tell "0 unread" from
         // "we couldn't ask". Also log when debug is on.
         unseenStatusError = (e && e.message) || String(e);
-        if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mailbox: STATUS UNSEEN failed for ${account.email}/${openFolder}: ${unseenStatusError}\n`);
+        if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mail-use: STATUS UNSEEN failed for ${account.email}/${openFolder}: ${unseenStatusError}\n`);
       }
     }
     const sorted = _uidsSortedDesc(uids);
@@ -365,7 +365,7 @@ async function listEmails({
           if (process.env.MAILBOX_DEBUG) {
             const ageStr = ageSec == null ? "unknown" : `${ageSec}s`;
             process.stderr.write(
-              `mailbox: cache thin (${returned}/${lim}) and stale (age ${ageStr} > ${freshSeconds}s) — refetching live\n`
+              `mail-use: cache thin (${returned}/${lim}) and stale (age ${ageStr} > ${freshSeconds}s) — refetching live\n`
             );
           }
           // fall through to the live IMAP path below
@@ -394,7 +394,7 @@ async function listEmails({
     } catch (e) {
       // Cache failed → fall through to live IMAP. Surface the reason so users
       // can tell why use_cache=true didn't actually use the cache.
-      process.stderr.write(`mailbox: cache read failed, falling back to live IMAP: ${e && e.message ? e.message : e}\n`);
+      process.stderr.write(`mail-use: cache read failed, falling back to live IMAP: ${e && e.message ? e.message : e}\n`);
     }
   }
 

@@ -181,7 +181,7 @@ smithery.yaml.bak
 
 ```bash
 $ python3 -c "from src.config.paths import EMAIL_SYNC_DB; print(EMAIL_SYNC_DB)"
-/path/to/mailbox/data/email_sync.db
+/path/to/mail-use/data/email_sync.db
 ```
 
 ### 单元测试
@@ -309,7 +309,7 @@ volumes:
 未来可以通过环境变量覆盖数据目录：
 
 ```bash
-export MAILBOX_DATA_DIR=/var/lib/mailbox
+export MAILBOX_DATA_DIR=/var/lib/mail-use
 ```
 
 （当前版本暂未实现，但路径集中配置为此预留了空间）

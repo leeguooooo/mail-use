@@ -1,5 +1,5 @@
 {
-  "name": "mailbox-cli-monorepo",
+  "name": "mail-use-npm",
   "private": true,
   "workspaces": [
     "packages/*"

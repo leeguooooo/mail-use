@@ -21,8 +21,8 @@ function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
 
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("CLI JSON contract - MVP commands", () => {
@@ -33,7 +33,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "account", "test-connection", "--json"], {
+    const r = await execa("node", [cliBin(), "account", "test-connection", "--json"], {
       reject: false,
       env,
     });
@@ -57,7 +57,7 @@ describe("CLI JSON contract - MVP commands", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "account", "test-connection", "--account-id", "does-not-exist", "--json"],
+      [cliBin(), "account", "test-connection", "--account-id", "does-not-exist", "--json"],
       {
         reject: false,
         env,
@@ -79,7 +79,7 @@ describe("CLI JSON contract - MVP commands", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
+      [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
       {
         reject: false,
         env,
@@ -108,7 +108,7 @@ describe("CLI JSON contract - MVP commands", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "show", "102", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
+      [cliBin(), "email", "show", "102", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
       {
         reject: false,
         env,
@@ -137,7 +137,7 @@ describe("CLI JSON contract - MVP commands", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "attachments", "102", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
+      [cliBin(), "email", "attachments", "102", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
       {
         reject: false,
         env,
@@ -167,7 +167,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "mark",
         "101",
@@ -204,7 +204,7 @@ describe("CLI JSON contract - MVP commands", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "delete", "101", "--folder", "INBOX", "--account-id", "mock_acc", "--dry-run", "--json"],
+      [cliBin(), "email", "delete", "101", "--folder", "INBOX", "--account-id", "mock_acc", "--dry-run", "--json"],
       {
         reject: false,
         env,
@@ -231,7 +231,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "send",
         "--to",
@@ -275,7 +275,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "send",
         "--to",
@@ -318,7 +318,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "reply",
         "mock_acc:INBOX:101",
@@ -363,7 +363,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "reply",
         "101",
@@ -402,7 +402,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "forward",
         "mock_acc:INBOX:102",
@@ -438,7 +438,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "sync", "status", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "sync", "status", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload).toHaveProperty("success");
@@ -455,14 +455,14 @@ describe("CLI JSON contract - MVP commands", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const force = await execa("node", [mailboxBin(), "sync", "force", "--account-id", "mock_acc", "--json"], { reject: false, env });
+    const force = await execa("node", [cliBin(), "sync", "force", "--account-id", "mock_acc", "--json"], { reject: false, env });
     expect(force.exitCode).toBe(0);
     const forcePayload = JSON.parse(force.stdout);
     expect(forcePayload).toHaveProperty("success");
 
     const list = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
+      [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--json"],
       { reject: false, env }
     );
     expect(list.exitCode).toBe(0);
@@ -478,7 +478,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "digest", "run", "--dry-run", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "digest", "run", "--dry-run", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload).toHaveProperty("success", true);
@@ -496,7 +496,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "monitor", "status", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "monitor", "status", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload).toHaveProperty("success", true);
@@ -512,7 +512,7 @@ describe("CLI JSON contract - MVP commands", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "inbox", "--limit", "2", "--account-id", "mock_acc", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "inbox", "--limit", "2", "--account-id", "mock_acc", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload).toHaveProperty("success", true);

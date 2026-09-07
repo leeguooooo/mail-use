@@ -20,7 +20,7 @@ function expectValid(schemaName, payload) {
 
 describe("CLI JSON contract - account list", () => {
   it("outputs a single JSON object with success/accounts/count", async () => {
-    const bin = path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+    const bin = path.join(import.meta.dirname, "..", "bin", "mail-use.js");
     const r = await execa("node", [bin, "account", "list", "--json"], {
       reject: false,
       env: {
@@ -62,7 +62,7 @@ describe("CLI JSON contract - account list", () => {
       "utf8"
     );
 
-    const bin = path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+    const bin = path.join(import.meta.dirname, "..", "bin", "mail-use.js");
     const r = await execa("node", [bin, "account", "list", "--json"], {
       reject: false,
       env: {

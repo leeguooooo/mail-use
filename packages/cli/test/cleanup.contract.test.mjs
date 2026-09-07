@@ -7,13 +7,13 @@ import fs from "node:fs";
 import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const { classify } = require("@mailbox/workflows").classify;
+const { classify } = require("@mail-use/workflows").classify;
 
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("WP-G: classifier", () => {
@@ -36,7 +36,7 @@ describe("WP-G: cleanup workflow (CLI)", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "cleanup", "--account-id", "mock_acc", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const p = JSON.parse(r.stdout);
     expect(p.success).toBe(true);
@@ -55,7 +55,7 @@ describe("WP-G: cleanup workflow (CLI)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "cleanup", "--account-id", "mock_acc", "--categories", "marketing", "--confirm", "--json"],
+      [cliBin(), "cleanup", "--account-id", "mock_acc", "--categories", "marketing", "--confirm", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

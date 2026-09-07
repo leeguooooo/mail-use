@@ -1,10 +1,10 @@
-# AI Skill: Mailbox CLI (OpenClaw-first)
+# AI Skill: mail-use CLI (OpenClaw-first)
 
 This document is written for an AI agent that is allowed to run shell commands.
-Goal: reliably read/manage emails by calling the `mailbox` CLI.
+Goal: reliably read/manage emails by calling the `mail-use` CLI.
 
 OpenClaw-first: channel delivery (Telegram/Slack/Discord/etc) and scheduling
-are handled by OpenClaw. The mailbox CLI focuses on email operations and
+are handled by OpenClaw. The mail-use CLI focuses on email operations and
 returns structured JSON.
 
 ## Skill Keywords (OpenClaw)
@@ -12,7 +12,7 @@ returns structured JSON.
 Use these tags/keywords for discovery:
 
 - OpenClaw keywords (keep this list short):
-  - `mailbox`, `email`, `imap`, `smtp`, `cli`, `automation`, `openclaw`, `agent`, `sync`, `inbox`
+  - `mail-use`, `email`, `imap`, `smtp`, `cli`, `automation`, `openclaw`, `agent`, `sync`, `inbox`
 
 - Extended tags (npm/GitHub topics):
   - `search`, `attachments`, `digest`, `monitor`, `ai`
@@ -22,9 +22,9 @@ Use these tags/keywords for discovery:
 Install the published CLI:
 
 ```bash
-npm install -g @leeguoo/mailbox-cli
-mailbox --help
-mailbox --version
+npm install -g @leeguoo/mail-use
+mail-use --help
+mail-use --version
 ```
 
 This npm package ships prebuilt binaries per platform (no Python required).
@@ -55,9 +55,9 @@ or old legacy layout), the CLI will read it and best-effort migrate to `auth.jso
 For automation: always use `--json` and check both exit code and `success`.
 
 ## OpenClaw usage
-- Treat mailbox as a tool: OpenClaw calls the CLI and consumes JSON output.
+- Treat mail-use as a tool: OpenClaw calls the CLI and consumes JSON output.
 - For channel delivery, OpenClaw formats/sends messages using its built-in
-  integrations. Mailbox should not send directly to chat channels.
+  integrations. mail-use should not send directly to chat channels.
 
 ## Required safety rules for AI
 
@@ -73,7 +73,7 @@ For automation: always use `--json` and check both exit code and `success`.
 ### 1) Discover accounts
 
 ```bash
-mailbox account list --json
+mail-use account list --json
 ```
 
 Select an `account_id` from the output.
@@ -81,7 +81,7 @@ Select an `account_id` from the output.
 ### 2) List unread emails (fast, cache-first)
 
 ```bash
-mailbox email list --unread-only --limit 20 --json
+mail-use email list --unread-only --limit 20 --json
 ```
 
 `--limit` applies to the merged list across accounts when no `--account-id` is provided.
@@ -90,55 +90,55 @@ mailbox email list --unread-only --limit 20 --json
 Filter a specific date range:
 
 ```bash
-mailbox email list --date-from 2026-02-02 --date-to 2026-02-03 --limit 50 --json
+mail-use email list --date-from 2026-02-02 --date-to 2026-02-03 --limit 50 --json
 ```
 
 If you must confirm live state:
 
 ```bash
-mailbox email list --unread-only --limit 20 --live --json
+mail-use email list --unread-only --limit 20 --live --json
 ```
 
 ### 3) Read one email
 
 ```bash
-mailbox email show <email_uid> --account-id <account_id> --json
+mail-use email show <email_uid> --account-id <account_id> --json
 ```
 
 To keep output small for OpenClaw, use preview and no HTML:
 
 ```bash
-mailbox email show <email_uid> --account-id <account_id> --preview --no-html --json
+mail-use email show <email_uid> --account-id <account_id> --preview --no-html --json
 ```
 
 If the preview is dominated by tracking URLs, add `--strip-urls`:
 
 ```bash
-mailbox email show <email_uid> --account-id <account_id> --preview --no-html --strip-urls --json
+mail-use email show <email_uid> --account-id <account_id> --preview --no-html --strip-urls --json
 ```
 
 ### 4) Mark as read (validate first)
 
 ```bash
-mailbox email mark <email_uid> --read --account-id <account_id> --folder INBOX --dry-run --json
-mailbox email mark <email_uid> --read --account-id <account_id> --folder INBOX --confirm --json
+mail-use email mark <email_uid> --read --account-id <account_id> --folder INBOX --dry-run --json
+mail-use email mark <email_uid> --read --account-id <account_id> --folder INBOX --confirm --json
 ```
 
 ### 5) Delete an email
 
 ```bash
-mailbox email delete <email_uid> --account-id <account_id> --folder INBOX --confirm --json
+mail-use email delete <email_uid> --account-id <account_id> --folder INBOX --confirm --json
 ```
 
 ## Sync/cache operations
 
 ```bash
-mailbox sync status --json
-mailbox sync force --json
-mailbox sync init
+mail-use sync status --json
+mail-use sync force --json
+mail-use sync init
 
 # Foreground scheduler loop (Ctrl+C to stop)
-mailbox sync daemon
+mail-use sync daemon
 ```
 
 ## Script wrappers
@@ -149,7 +149,7 @@ The CLI implements workflows directly. Prefer calling the CLI subcommands
 Examples:
 
 ```bash
-mailbox digest run --json
-mailbox monitor status --json
-mailbox inbox --limit 15 --text
+mail-use digest run --json
+mail-use monitor status --json
+mail-use inbox --limit 15 --text
 ```

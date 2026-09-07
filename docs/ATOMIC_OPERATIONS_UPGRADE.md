@@ -1,11 +1,11 @@
 # 原子操作升级 - 2025年10月 (Legacy)
 
 > Legacy notice: This document describes the old MCP-style tool surface.
-> The current project is a Node.js CLI (`mailbox`) with a JSON output contract.
+> The current project is a Node.js CLI (`mail-use`) with a JSON output contract.
 
 ## 🎯 升级概述
 
-本次升级重新明确了 Mailbox 的设计定位：**专注提供原子级邮件操作能力**，将高级整合功能交给上层 AI 完成。
+本次升级重新明确了 mail-use 的设计定位：**专注提供原子级邮件操作能力**，将高级整合功能交给上层 AI 完成。
 
 ### 核心理念
 

@@ -1,7 +1,7 @@
 const fs = require("fs");
 
-const { paths } = require("@mailbox/shared");
-const { email } = require("@mailbox/core");
+const { paths } = require("@mail-use/shared");
+const { email } = require("@mail-use/core");
 
 function _readJson(p) {
   try {

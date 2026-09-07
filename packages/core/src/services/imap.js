@@ -80,7 +80,7 @@ async function testConnection(account, folder) {
         if (ss && ss.unseen != null) unseen = Number(ss.unseen);
       } catch (e) {
         unreadError = (e && e.message) || String(e);
-        if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mailbox: STATUS UNSEEN failed for ${account.email}/${openFolder}: ${unreadError}\n`);
+        if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mail-use: STATUS UNSEEN failed for ${account.email}/${openFolder}: ${unreadError}\n`);
       }
       const out = { success: true, total_emails: total, unread_emails: unseen };
       if (unreadError) { out.unread_emails_unavailable = true; out.unread_emails_error = unreadError; }

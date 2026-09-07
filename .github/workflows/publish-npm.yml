@@ -47,8 +47,8 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: mailbox-${{ matrix.platform }}
-          path: mailbox-cli/packages/mailbox-cli-${{ matrix.platform }}/bin/mailbox
+          name: mail-use-${{ matrix.platform }}
+          path: mail-use-npm/packages/mail-use-${{ matrix.platform }}/bin/mail-use
           if-no-files-found: error
 
   publish:
@@ -113,8 +113,8 @@ jobs:
           set -euo pipefail
 
           for platform in darwin-arm64 darwin-x64 linux-x64-gnu; do
-            src=".artifacts/mailbox-${platform}/mailbox"
-            dest="mailbox-cli/packages/mailbox-cli-${platform}/bin/mailbox"
+            src=".artifacts/mail-use-${platform}/mail-use"
+            dest="mail-use-npm/packages/mail-use-${platform}/bin/mail-use"
             mkdir -p "$(dirname "$dest")"
             cp "$src" "$dest"
             chmod +x "$dest" || true
@@ -158,16 +158,16 @@ jobs:
             rm -f "$logfile"
             return "$rc"
           }
-          publish_one mailbox-cli/packages/mailbox-cli-darwin-arm64
-          publish_one mailbox-cli/packages/mailbox-cli-darwin-x64
-          publish_one mailbox-cli/packages/mailbox-cli-linux-x64-gnu
+          publish_one mail-use-npm/packages/mail-use-darwin-arm64
+          publish_one mail-use-npm/packages/mail-use-darwin-x64
+          publish_one mail-use-npm/packages/mail-use-linux-x64-gnu
 
       - name: Publish launcher package
         shell: bash
         run: |
           set -euo pipefail
           logfile=$(mktemp)
-          if env -u NODE_AUTH_TOKEN npm publish --access public mailbox-cli/packages/mailbox-cli 2>&1 | tee "$logfile"; then
+          if env -u NODE_AUTH_TOKEN npm publish --access public mail-use-npm/packages/mail-use 2>&1 | tee "$logfile"; then
             rm -f "$logfile"; exit 0
           fi
           rc=${PIPESTATUS[0]}

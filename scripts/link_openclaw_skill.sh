@@ -3,9 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
-SRC="${REPO_ROOT}/skills/mailbox"
+SRC="${REPO_ROOT}/skills/mail-use"
 DEST_DIR="${HOME}/.openclaw/skills"
-DEST="${DEST_DIR}/mailbox"
+DEST="${DEST_DIR}/mail-use"
 
 force=0
 if [[ "${1:-}" == "--force" ]]; then
@@ -13,7 +13,7 @@ if [[ "${1:-}" == "--force" ]]; then
 fi
 
 if [[ ! -d "${SRC}" ]]; then
-  echo "Mailbox skill not found at: ${SRC}" >&2
+  echo "mail-use skill not found at: ${SRC}" >&2
   exit 1
 fi
 

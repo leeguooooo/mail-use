@@ -160,13 +160,13 @@ FAILED (errors=1)
 from src.config.paths import EMAIL_SYNC_DB, SYNC_CONFIG_JSON, SYNC_HEALTH_HISTORY_JSON
 
 print(EMAIL_SYNC_DB)
-# Output: /path/to/mailbox/data/email_sync.db
+# Output: /path/to/mail-use/data/email_sync.db
 
 print(SYNC_CONFIG_JSON)
-# Output: /path/to/mailbox/data/sync_config.json
+# Output: /path/to/mail-use/data/sync_config.json
 
 print(SYNC_HEALTH_HISTORY_JSON)
-# Output: /path/to/mailbox/data/sync_health_history.json
+# Output: /path/to/mail-use/data/sync_health_history.json
 ```
 
 ---

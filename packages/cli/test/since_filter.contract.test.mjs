@@ -8,14 +8,14 @@ import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 async function listSince(env, since) {
   const r = await execa(
     "node",
-    [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--since", since, "--json"],
+    [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--since", since, "--json"],
     { reject: false, env }
   );
   return JSON.parse(r.stdout);

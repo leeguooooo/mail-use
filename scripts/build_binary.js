@@ -9,9 +9,9 @@ function platformPackage() {
   const platform = process.platform;
   const arch = process.arch;
 
-  if (platform === "darwin" && arch === "arm64") return "mailbox-cli-darwin-arm64";
-  if (platform === "darwin" && arch === "x64") return "mailbox-cli-darwin-x64";
-  if (platform === "linux" && arch === "x64") return "mailbox-cli-linux-x64-gnu";
+  if (platform === "darwin" && arch === "arm64") return "mail-use-darwin-arm64";
+  if (platform === "darwin" && arch === "x64") return "mail-use-darwin-x64";
+  if (platform === "linux" && arch === "x64") return "mail-use-linux-x64-gnu";
   return null;
 }
 
@@ -76,7 +76,7 @@ function runPkgStrict(cmd, args) {
 }
 
 function ensureBinary(entry, target, outBin, root) {
-  const bundle = path.join(path.dirname(outBin), "mailbox.bundle.cjs");
+  const bundle = path.join(path.dirname(outBin), "mail-use.bundle.cjs");
   bundleForPkg(entry, root, bundle);
   runPkgStrict("pnpm", ["-C", root, "exec", "pkg", bundle, "--targets", target, "--output", outBin]);
   if (!fs.existsSync(outBin)) {
@@ -105,12 +105,12 @@ function main() {
     process.exit(1);
   }
 
-  const entry = path.join(__dirname, "..", "packages", "cli", "bin", "mailbox.js");
+  const entry = path.join(__dirname, "..", "packages", "cli", "bin", "mail-use.js");
   const outDir = path.join(__dirname, "..", "dist");
   fs.mkdirSync(outDir, { recursive: true });
 
-  const outBin = path.join(outDir, "mailbox");
-  console.log(`Building mailbox binary: target=${target}`);
+  const outBin = path.join(outDir, "mail-use");
+  console.log(`Building mail-use binary: target=${target}`);
   const root = path.join(__dirname, "..");
   run("pnpm", ["-C", root, "install"]);
   run("pnpm", ["-C", root, "test"]);
@@ -122,10 +122,10 @@ function main() {
   const smoke = runMcpSmokeTest(outBin);
   console.log(`MCP smoke test passed: ${smoke.toolCount} tools`);
 
-  const platformPkgDir = path.join(__dirname, "..", "mailbox-cli", "packages", pkgName);
+  const platformPkgDir = path.join(__dirname, "..", "mail-use-npm", "packages", pkgName);
   const binDir = path.join(platformPkgDir, "bin");
   fs.mkdirSync(binDir, { recursive: true });
-  const dest = path.join(binDir, "mailbox");
+  const dest = path.join(binDir, "mail-use");
   fs.copyFileSync(outBin, dest);
   fs.chmodSync(dest, 0o755);
   console.log(`Copied binary to: ${dest}`);

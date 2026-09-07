@@ -12,8 +12,8 @@ const { _groupTargets, _groupsBreakdown } = require("../src/main.js");
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("WP-E: grouped preview + multi-folder mutation", () => {
@@ -44,7 +44,7 @@ describe("WP-E: grouped preview + multi-folder mutation", () => {
     // Mock 102 is from news@example.com in INBOX.
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "delete", "--from", "news", "--account-id", "mock_acc", "--dry-run", "--json"],
+      [cliBin(), "email", "delete", "--from", "news", "--account-id", "mock_acc", "--dry-run", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -63,7 +63,7 @@ describe("WP-E: grouped preview + multi-folder mutation", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "delete", "--from", "news", "--all-folders", "--account-id", "mock_acc", "--dry-run", "--json"],
+      [cliBin(), "email", "delete", "--from", "news", "--all-folders", "--account-id", "mock_acc", "--dry-run", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

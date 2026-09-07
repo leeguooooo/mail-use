@@ -13,8 +13,8 @@ const { _isSpecialMutationFolder } = require("../src/main.js");
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("review-fix: 3-part gid parsing + folder-honoring mutations", () => {
@@ -54,7 +54,7 @@ describe("review-fix: 3-part gid parsing + folder-honoring mutations", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "delete", "mock_acc:Trash:999", "--dry-run", "--json"],
+      [cliBin(), "email", "delete", "mock_acc:Trash:999", "--dry-run", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -70,7 +70,7 @@ describe("review-fix: 3-part gid parsing + folder-honoring mutations", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "mark", "mock_acc:Archive:5", "--read", "--dry-run", "--json"],
+      [cliBin(), "email", "mark", "mock_acc:Archive:5", "--read", "--dry-run", "--json"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

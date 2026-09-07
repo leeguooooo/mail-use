@@ -64,10 +64,10 @@ uv run uvicorn scripts.email_monitor_api:app --host 0.0.0.0 --port 18888 &
 
 ```bash
 # 每 5 分钟检查邮件
-*/5 * * * * cd /path/to/mailbox && mailbox monitor run --json
+*/5 * * * * cd /path/to/mail-use && mail-use monitor run --json
 
 # 每天 08:30 发送汇总
-30 8 * * * cd /path/to/mailbox && mailbox digest run --json
+30 8 * * * cd /path/to/mail-use && mail-use digest run --json
 ```
 
 ---

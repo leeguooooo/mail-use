@@ -1,10 +1,10 @@
 # Documentation
 
-Mailbox is now a CLI-first project.
+mail-use is now a CLI-first project.
 
 Primary docs for the Node CLI rewrite:
 
-- `docs/AI_SKILL_MAILBOX_CLI.md` (automation/agent usage)
+- `docs/AI_SKILL_MAIL_USE.md` (automation/agent usage)
 - `docs/CLI_JSON_CONTRACT.md` (JSON output shapes)
 - `docs/RELEASING.md` (binaries + npm distribution)
 - `docs/NODE_REWRITE_PLAN.md` (roadmap/architecture)
@@ -19,7 +19,7 @@ Legacy Python/MCP docs are kept for reference only:
 
 Start here:
 
-- `docs/AI_SKILL_MAILBOX_CLI.md`
+- `docs/AI_SKILL_MAIL_USE.md`
 - `docs/CLI_JSON_CONTRACT.md`
 - `docs/RELEASING.md`
 

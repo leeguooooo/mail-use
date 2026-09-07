@@ -8,8 +8,8 @@ import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 const COMPACT_KEYS = [
@@ -34,7 +34,7 @@ describe("WP-C: --format compact / jsonl", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--format", "compact"],
+      [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--format", "compact"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -58,7 +58,7 @@ describe("WP-C: --format compact / jsonl", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--format", "jsonl"],
+      [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--format", "jsonl"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -79,7 +79,7 @@ describe("WP-C: --format compact / jsonl", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--format", "compact,jsonl"],
+      [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--format", "compact,jsonl"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -98,7 +98,7 @@ describe("WP-C: --format compact / jsonl", () => {
     // --since far in the future → 0 emails.
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--since", "2099-01-01", "--format", "jsonl"],
+      [cliBin(), "email", "list", "--folder", "INBOX", "--account-id", "mock_acc", "--live", "--since", "2099-01-01", "--format", "jsonl"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);
@@ -113,7 +113,7 @@ describe("WP-C: --format compact / jsonl", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "show", "102", "--folder", "INBOX", "--account-id", "mock_acc", "--format", "compact"],
+      [cliBin(), "email", "show", "102", "--folder", "INBOX", "--account-id", "mock_acc", "--format", "compact"],
       { reject: false, env }
     );
     expect(r.exitCode).toBe(0);

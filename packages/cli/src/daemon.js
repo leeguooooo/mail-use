@@ -1,5 +1,5 @@
 // Persistent IMAP daemon. Listens on a Unix socket and serves JSON-RPC
-// calls into @mailbox/core, reusing pooled IMAP connections so each
+// calls into @mail-use/core, reusing pooled IMAP connections so each
 // downstream CLI invocation skips the 1-3s TCP+TLS+LOGIN handshake.
 //
 // Wire format: line-delimited JSON.
@@ -17,10 +17,10 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 
-const core = require("@mailbox/core");
-const { ImapPool } = require("@mailbox/core/src/services/imap_pool");
+const core = require("@mail-use/core");
+const { ImapPool } = require("@mail-use/core/src/services/imap_pool");
 const { workflows, digest, monitor, inbox, cleanup } = (() => {
-  try { return require("@mailbox/workflows"); } catch { return {}; }
+  try { return require("@mail-use/workflows"); } catch { return {}; }
 })();
 
 function getSocketPath() {
@@ -58,7 +58,7 @@ async function startDaemon({ foreground = true, log = console.error, syncInterva
   if (fs.existsSync(sockPath)) {
     const reachable = await _probe(sockPath).catch(() => false);
     if (reachable) {
-      throw Object.assign(new Error(`mailbox daemon already running on ${sockPath}`), { code: "EADDRINUSE" });
+      throw Object.assign(new Error(`mail-use daemon already running on ${sockPath}`), { code: "EADDRINUSE" });
     }
     try { fs.unlinkSync(sockPath); } catch { /* ignore */ }
   }
@@ -95,12 +95,12 @@ async function startDaemon({ foreground = true, log = console.error, syncInterva
           stats.prewarm.completed += 1;
         } catch (e) {
           stats.prewarm.failed += 1;
-          log(`[mailbox daemon] prewarm ${acc.email} failed: ${(e && e.message) || e}`);
+          log(`[mail-use daemon] prewarm ${acc.email} failed: ${(e && e.message) || e}`);
         }
       }));
-      log(`[mailbox daemon] prewarmed ${stats.prewarm.completed}/${stats.prewarm.started} account(s)`);
+      log(`[mail-use daemon] prewarmed ${stats.prewarm.completed}/${stats.prewarm.started} account(s)`);
     } catch (e) {
-      log(`[mailbox daemon] prewarm aborted: ${(e && e.message) || e}`);
+      log(`[mail-use daemon] prewarm aborted: ${(e && e.message) || e}`);
     }
   })();
 
@@ -142,11 +142,11 @@ async function startDaemon({ foreground = true, log = console.error, syncInterva
       if (typeof t.unref === "function") t.unref();
     };
     scheduleNext(5_000); // first run after warm-up
-    log(`[mailbox daemon] background sync every ${Math.round(syncIntervalMs / 1000)}s${syncAccountId ? ` (account ${syncAccountId})` : ""}`);
+    log(`[mail-use daemon] background sync every ${Math.round(syncIntervalMs / 1000)}s${syncAccountId ? ` (account ${syncAccountId})` : ""}`);
   }
 
   const cleanup = async () => {
-    log(`[mailbox daemon] shutting down (pid=${process.pid})`);
+    log(`[mail-use daemon] shutting down (pid=${process.pid})`);
     syncStopped = true;
     try { await pool.closeAll(); } catch { /* ignore */ }
     try { server.close(); } catch { /* ignore */ }
@@ -157,7 +157,7 @@ async function startDaemon({ foreground = true, log = console.error, syncInterva
   process.once("SIGINT", cleanup);
   process.once("SIGTERM", cleanup);
 
-  log(`[mailbox daemon] listening on ${sockPath} (pid=${process.pid})`);
+  log(`[mail-use daemon] listening on ${sockPath} (pid=${process.pid})`);
   return { server, pool, sockPath, stats };
 }
 
@@ -189,7 +189,7 @@ function _handleConn(conn, ctx) {
       const line = buffer.slice(0, idx).toString("utf8");
       buffer = buffer.slice(idx + 1);
       if (!line.trim()) continue;
-      _dispatch(line, conn, ctx).catch((e) => ctx.log(`[mailbox daemon] dispatch error: ${e}`));
+      _dispatch(line, conn, ctx).catch((e) => ctx.log(`[mail-use daemon] dispatch error: ${e}`));
     }
   });
   conn.on("error", () => { /* ignore client disconnects */ });
@@ -233,11 +233,11 @@ async function _dispatch(line, conn, ctx) {
   try {
     const result = await fn(req.args || {});
     const dt = Date.now() - t0;
-    if (process.env.MAILBOX_DAEMON_TRACE) ctx.log(`[mailbox daemon] ${fnName} ok in ${dt}ms`);
+    if (process.env.MAILBOX_DAEMON_TRACE) ctx.log(`[mail-use daemon] ${fnName} ok in ${dt}ms`);
     _respond(conn, { id, ok: true, result });
   } catch (e) {
     const dt = Date.now() - t0;
-    if (process.env.MAILBOX_DAEMON_TRACE) ctx.log(`[mailbox daemon] ${fnName} FAIL in ${dt}ms: ${(e && e.message) || e}`);
+    if (process.env.MAILBOX_DAEMON_TRACE) ctx.log(`[mail-use daemon] ${fnName} FAIL in ${dt}ms: ${(e && e.message) || e}`);
     _respond(conn, { id, ok: false, error: (e && e.message) || "failed", error_code: "operation_failed" });
   }
 }
@@ -257,6 +257,9 @@ async function _probe(sockPath) {
 
 // ---------- autostart (launchd / systemd-user) ----------
 
+// 改名 mailbox -> mail-use 时，launchd label / systemd unit / socket 路径刻意不动：
+// 它们标识的是用户机器上**已经装好**的那份常驻服务。换个名字，install 会写出第二份，
+// 老的那份还在跑，两个 daemon 抢同一个 socket——用户什么都没做就坏了。
 const LAUNCHD_LABEL = "com.leeguoo.mailbox.daemon";
 const SYSTEMD_UNIT = "mailbox-daemon.service";
 
@@ -278,7 +281,7 @@ function _resolveCliExecutable() {
   const isPkgBundle = argv1.startsWith("/snapshot/") || (typeof process.pkg !== "undefined");
   if (isPkgBundle) return { node: "", script: exe };
   if (argv1 && fs.existsSync(argv1)) return { node: exe, script: argv1 };
-  return { node: exe, script: "mailbox" };
+  return { node: exe, script: "mail-use" };
 }
 
 function _autostartPaths() {

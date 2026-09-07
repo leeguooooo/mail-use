@@ -3,11 +3,11 @@
 ## Summary
 Rebuild the project as a pure Node.js implementation packaged into prebuilt
 platform binaries and distributed via npm, **with OpenClaw as the primary
-integration surface**. Keep the existing `mailbox` CLI contract and
+integration surface**. Keep the existing `mail-use` CLI contract and
 config/data compatibility, but replace the Python codebase with Node.js.
 
 OpenClaw will be responsible for channels (Telegram/Slack/Discord/etc) and
-scheduling; mailbox will focus on email operations + structured outputs.
+scheduling; mail-use will focus on email operations + structured outputs.
 
 This plan targets the following commands as MVP:
 - account
@@ -19,9 +19,9 @@ This plan targets the following commands as MVP:
 
 ## Goals
 - Pure Node.js implementation (JS, not TS).
-- Zero-setup user experience: `npm i -g @leeguoo/mailbox-cli` -> `mailbox` (no Python,
+- Zero-setup user experience: `npm i -g @leeguoo/mail-use` -> `mail-use` (no Python,
   no native build/compilation on user machines).
-- OpenClaw-first usage: mailbox works cleanly as an OpenClaw skill/tool.
+- OpenClaw-first usage: mail-use works cleanly as an OpenClaw skill/tool.
 - Keep current CLI JSON output contract for skill usage.
 - Keep config/data compatibility:
   - `~/.config/mailbox/` (auth.json, config.toml)
@@ -35,33 +35,33 @@ This plan targets the following commands as MVP:
 - MCP protocol or stdio server.
 - Rewriting third-party services (keep same providers/flows).
 - Pure-JS distribution that requires local native builds on install.
-- Direct channel delivery from mailbox CLI (Telegram/Lark/Email) when OpenClaw
+- Direct channel delivery from mail-use CLI (Telegram/Lark/Email) when OpenClaw
   already provides channels.
 
 ## Distribution Decision (User Simplicity)
 To keep installation as simple as possible, we will **continue the current npm
 distribution model**:
-- `mailbox-cli` (launcher package) provides the `mailbox` command.
+- `mail-use` (launcher package) provides the `mail-use` command.
 - Platform packages provide the actual binary.
 
 The difference is the **binary will be produced from the Node.js rewrite**,
 not from Python. This keeps the user experience unchanged (`npm i -g
-@leeguoo/mailbox-cli`) and avoids native compilation at install time.
+@leeguoo/mail-use`) and avoids native compilation at install time.
 
 ## OpenClaw Integration (Primary Path)
-- Mailbox is treated as an OpenClaw skill/tool.
+- mail-use is treated as an OpenClaw skill/tool.
 - OpenClaw owns channel delivery + cron scheduling.
-- Mailbox focuses on email operations and returns structured JSON + optional
+- mail-use focuses on email operations and returns structured JSON + optional
   human-readable summaries.
 - If a channel is not supported by OpenClaw, add an optional notifier later,
   but keep it disabled by default.
 
 ### OpenClaw Cron (Example)
-OpenClaw should invoke mailbox commands directly and handle delivery.
+OpenClaw should invoke mail-use commands directly and handle delivery.
 Suggested commands:
-- Digest: `mailbox digest run --json`
-- Monitor: `mailbox monitor run --json`
-- Inbox summary: `mailbox inbox --limit 15 --text`
+- Digest: `mail-use digest run --json`
+- Monitor: `mail-use monitor run --json`
+- Inbox summary: `mail-use inbox --limit 15 --text`
 
 ## Compatibility Contract
 ### CLI
@@ -71,7 +71,7 @@ Suggested commands:
   - 1 operation failed
   - 2 invalid usage
 - JSON output includes `success` and `error` fields.
-- No interactive mode; `mailbox` requires a command (use `--help`).
+- No interactive mode; `mail-use` requires a command (use `--help`).
 
 ### Paths
 Use XDG defaults:
@@ -151,7 +151,7 @@ Phase 0: Contract freeze
 Phase 1: Node scaffolding
 - Add root `package.json` with pnpm workspaces.
 - Create `packages/cli`, `packages/core`, `packages/shared`, `packages/workflows`.
-- Wire `mailbox` bin to CLI entry.
+- Wire `mail-use` bin to CLI entry.
 
 Phase 2: Config + storage parity
 - Implement XDG path resolver + env overrides.
@@ -184,9 +184,9 @@ Phase 6: Remove Python/MCP
 - Snapshot tests for CLI JSON output.
 
 ## Release Plan
-- Publish `@leeguoo/mailbox-cli` npm package with `mailbox` bin.
+- Publish `@leeguoo/mail-use` npm package with `mail-use` bin.
 - Publish platform binary packages built from the Node implementation.
-- Ensure `npm i -g @leeguoo/mailbox-cli` works with no Python dependency and no native
+- Ensure `npm i -g @leeguoo/mail-use` works with no Python dependency and no native
   compilation step on user machines.
 - Document upgrade/migration for existing users.
 

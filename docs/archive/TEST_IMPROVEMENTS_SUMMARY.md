@@ -208,7 +208,7 @@
 
 ```bash
 # 运行所有测试
-cd /path/to/mailbox
+cd /path/to/mail-use
 python3 -m unittest discover tests/ -v
 
 # 运行特定测试文件

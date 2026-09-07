@@ -224,7 +224,7 @@ class Tool:
 ./run.sh
 
 # 应该看到:
-# INFO - Starting Mailbox (Legacy)
+# INFO - Starting mail-use (Legacy)
 # INFO - Registered tool: list_emails
 # INFO - Registered tool: send_email
 # ... (所有工具)

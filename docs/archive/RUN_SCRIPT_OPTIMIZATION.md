@@ -39,7 +39,7 @@ fi
 **After**:
 ```bash
 #!/bin/bash
-# Mailbox startup script (Legacy)
+# mail-use startup script (Legacy)
 # Automatically detects and uses uv if available, otherwise falls back to python3
 set -euo pipefail
 
@@ -109,7 +109,7 @@ from .mcp_tools import MCPTools
 ./run.sh
 
 # 从任何目录（需要在项目目录下执行）
-cd /path/to/mailbox
+cd /path/to/mail-use
 ./run.sh
 ```
 
@@ -185,7 +185,7 @@ $ bash -c 'command -v uv'
 {
   "mcpServers": {
     "email": {
-      "command": "/path/to/mailbox/mailbox",
+      "command": "/path/to/mail-use/mail-use",
       "env": {
         "MCP_LANGUAGE": "en"
       }

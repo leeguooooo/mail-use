@@ -1,6 +1,6 @@
 packages:
   - "packages/*"
-  - "mailbox-cli/packages/*"
+  - "mail-use-npm/packages/*"
 
 # esbuild 需要跑安装脚本来落平台二进制。pnpm 10+ 默认不执行依赖的构建脚本，
 # 干净检出下 `pnpm install` 会直接以 ERR_PNPM_IGNORED_BUILDS 失败，

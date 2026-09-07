@@ -1,4 +1,4 @@
-# Mailbox - 设计原则与能力定位 (Legacy)
+# mail-use - 设计原则与能力定位 (Legacy)
 
 > Legacy notice: MCP server/stdio is no longer part of this repository.
 > Keep this document only for historical reference.
@@ -7,7 +7,7 @@
 
 ### 1. **原子级操作** (Atomic Operations)
 
-Mailbox 专注于提供**细颗粒度的原子操作**，而非高层次的业务整合。
+mail-use 专注于提供**细颗粒度的原子操作**，而非高层次的业务整合。
 
 #### ✅ 我们提供什么
 - **单一职责的操作**: 每个工具只做一件事

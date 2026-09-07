@@ -1,4 +1,4 @@
-# Mailbox CLI — agent-ergonomics pass
+# mail-use CLI — agent-ergonomics pass
 
 **Date:** 2026-06-01
 **Branch:** `feat/agent-ergonomics`
@@ -77,7 +77,7 @@ Files: `core/src/services/email.js`, `core/src/storage/sync_db.js`, `cli/src/mai
   2-part (`account:uid`) and 3-part. `list`/`search` emit 3-part gids.
 
 Acceptance: ids returned by `search --folder all` can be passed to `show` with no `--folder`
-and resolve to the correct mailbox.
+and resolve to the correct mail-use.
 
 ### WP-B — Unread stats fields
 Files: `core/src/services/email.js`, `core/src/storage/sync_db.js`, `core/src/services/sync.js`,
@@ -161,7 +161,7 @@ Files: `workflows/src/workflows/classify.js` (new), `workflows/src/workflows/inb
   3. `routine_notification` — `no-reply@` sender + notification keywords.
   4. else `unknown`.
   Sender allowlists in a config file (`config_templates/`) with shipped defaults.
-- `mailbox cleanup --dry-run` → `{ candidates_by_category, protected: {counts}, plan_only:true }`,
+- `mail-use cleanup --dry-run` → `{ candidates_by_category, protected: {counts}, plan_only:true }`,
   never deletes. `--confirm` pipes `marketing`/`routine_notification` into `deleteEmails`,
   reusing the WP-E group→confirm machinery. MCP `cleanup` tool (dry-run default).
 

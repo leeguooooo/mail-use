@@ -1,10 +1,10 @@
 {
-  "name": "mailbox-monorepo",
+  "name": "mail-use-monorepo",
   "private": true,
-  "description": "Mailbox Node CLI monorepo (workspace)",
+  "description": "mail-use Node CLI monorepo (workspace)",
   "workspaces": [
     "packages/*",
-    "mailbox-cli/packages/*"
+    "mail-use-npm/packages/*"
   ],
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13.0.1",

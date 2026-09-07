@@ -12,8 +12,8 @@ const require = createRequire(import.meta.url);
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
 }
-function mailboxBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mailbox.js");
+function cliBin() {
+  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 }
 
 describe("Codex review fixes (regression)", () => {
@@ -48,7 +48,7 @@ describe("Codex review fixes (regression)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "reply", "mock_acc:Trash:101", "--folder", "INBOX", "--body", "Reply body", "--json"],
+      [cliBin(), "email", "reply", "mock_acc:Trash:101", "--folder", "INBOX", "--body", "Reply body", "--json"],
       { reject: false, env }
     );
 
@@ -72,7 +72,7 @@ describe("Codex review fixes (regression)", () => {
     const r = await execa(
       "node",
       [
-        mailboxBin(),
+        cliBin(),
         "email",
         "forward",
         "mock_acc:Trash:102",
@@ -105,7 +105,7 @@ describe("Codex review fixes (regression)", () => {
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
     // No --confirm — must come back as dry-run.
-    const r = await execa("node", [mailboxBin(), "email", "flag", "1", "--account-id", "mock_acc", "--set", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "email", "flag", "1", "--account-id", "mock_acc", "--set", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload.success).toBe(true);
@@ -119,7 +119,7 @@ describe("Codex review fixes (regression)", () => {
     const env = testEnv(root);
     writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
 
-    const r = await execa("node", [mailboxBin(), "email", "move", "1", "--account-id", "mock_acc", "--target-folder", "Archive", "--json"], { reject: false, env });
+    const r = await execa("node", [cliBin(), "email", "move", "1", "--account-id", "mock_acc", "--target-folder", "Archive", "--json"], { reject: false, env });
     expect(r.exitCode).toBe(0);
     const payload = JSON.parse(r.stdout);
     expect(payload.success).toBe(true);
@@ -134,7 +134,7 @@ describe("Codex review fixes (regression)", () => {
     // empty — that path is covered by the empty-string drop in leanResult.
     // We instead assert that preview is NOT in LEAN_DROP_PER_EMAIL by
     // poking the contract directly.
-    const { leanResult } = await import("@mailbox/shared/src/contract.js");
+    const { leanResult } = await import("@mail-use/shared/src/contract.js");
     const slim = leanResult({
       success: true,
       emails: [
@@ -150,7 +150,7 @@ describe("Codex review fixes (regression)", () => {
   });
 
   it("RISK-9: invalid_date wins over generic invalid_argument", async () => {
-    const { inferErrorCode } = await import("@mailbox/shared/src/contract.js");
+    const { inferErrorCode } = await import("@mail-use/shared/src/contract.js");
     expect(inferErrorCode("--date-from value \"foo\" is not a valid date (expected ...)")).toBe("invalid_date");
     expect(inferErrorCode("--limit must be a non-negative number (got -5)")).toBe("invalid_limit");
     expect(inferErrorCode("Account not found: x")).toBe("account_not_found");
@@ -166,7 +166,7 @@ describe("Codex review fixes (regression)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "mark", "101 102,103", "--read", "--account-id", "mock_acc", "--dry-run", "--json"],
+      [cliBin(), "email", "mark", "101 102,103", "--read", "--account-id", "mock_acc", "--dry-run", "--json"],
       { reject: false, env }
     );
 
@@ -185,7 +185,7 @@ describe("Codex review fixes (regression)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "delete", "101 102,103", "--account-id", "mock_acc", "--dry-run", "--json"],
+      [cliBin(), "email", "delete", "101 102,103", "--account-id", "mock_acc", "--dry-run", "--json"],
       { reject: false, env }
     );
 
@@ -204,7 +204,7 @@ describe("Codex review fixes (regression)", () => {
 
     const r = await execa(
       "node",
-      [mailboxBin(), "email", "show", "101", "102", "--account-id", "mock_acc", "--folder", "INBOX", "--json"],
+      [cliBin(), "email", "show", "101", "102", "--account-id", "mock_acc", "--folder", "INBOX", "--json"],
       { reject: false, env }
     );
 

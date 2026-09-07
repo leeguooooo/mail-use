@@ -1,11 +1,12 @@
 ---
-name: mailbox
+name: mail-use
 description: Read, search, send, and manage email across Gmail, QQ, 163, Outlook and any IMAP/SMTP account from the command line. Use when the user asks to "read my email", "查邮件", "look up an Amazon order email", "find the customer review notification", "send an email", "回复邮件", "delete spam", "查未读", "show unread", "synchronize my mailbox", "set up MCP for email", or anything that involves listing / searching / reading / writing / classifying messages from one or more mailboxes.
 metadata:
   author: leeguooooo
   version: "0.2.2"
-  homepage: https://github.com/leeguooooo/Mailbox
+  homepage: https://github.com/leeguooooo/mail-use
 keywords:
+  - mail-use
   - mailbox
   - email
   - imap
@@ -18,30 +19,30 @@ keywords:
   - 邮箱
 ---
 
-# Mailbox CLI Skill
+# mail-use CLI Skill
 
-Drives the `@leeguoo/mailbox-cli` Node CLI to read and manage email across
+Drives the `@leeguoo/mail-use` Node CLI to read and manage email across
 multiple IMAP accounts. Returns a stable JSON contract — every response
 includes `success: boolean` and, on failure, `error: string` +
 `error_code: string` (machine-readable).
 
 ## Compatibility — check the CLI version first
 
-**If `mailbox` is not on PATH** (`command not found` / `mailbox: not found`), install it
+**If `mail-use` is not on PATH** (`command not found` / `mail-use: not found`), install it
 non-interactively from GitHub Releases (no npm, no auth) before doing anything else:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/leeguooooo/Mailbox/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
 # installs the prebuilt binary to ~/.local/bin — make sure that's on PATH, then re-probe
-export PATH="$HOME/.local/bin:$PATH"; mailbox --version
+export PATH="$HOME/.local/bin:$PATH"; mail-use --version
 ```
 
-These commands/flags require **mailbox ≥ 2.11.0**:
+These commands/flags require **mail-use ≥ 2.11.0**:
 `--format compact|jsonl`, `email recent`, `cleanup`, `--since`, `--account-unread`,
 `--text-only`, the 3-part gid (`account_id:folder:uid`), and `search --timeout`.
 
-Probe before relying on them: `mailbox --version`. Update by re-running the installer above
-(`MAILBOX_VERSION=v2.11.2 …` to pin). On an older CLI, use these fallbacks (all available
+Probe before relying on them: `mail-use --version`. Update by re-running the installer above
+(`MAIL_USE_VERSION=v2.11.2 …` to pin). On an older CLI, use these fallbacks (all available
 since early versions):
 
 | Newer | Fallback on < 2.11 |
@@ -52,32 +53,32 @@ since early versions):
 | `--text-only` | `--no-html` |
 | `cleanup` | classify in-agent from `email list` output |
 
-To tell whether a command exists, probe `mailbox <cmd> --help --json` and check
+To tell whether a command exists, probe `mail-use <cmd> --help --json` and check
 `success` — an unknown command returns `success:false` / `error_code:"invalid_argument"`.
 
 ## Setup (one time, by the user)
 
 ```bash
 # 1. Install the CLI from GitHub Releases (no npm/Node needed; prebuilt binary):
-curl -fsSL https://raw.githubusercontent.com/leeguooooo/Mailbox/main/install.sh | sh
-#    (npm is deprecated: `npm install -g @leeguoo/mailbox-cli` may lag the releases)
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
+#    (or `npm install -g @leeguoo/mail-use` — same binary, usually one release behind)
 
 # 2. Configure accounts (edit credentials):
 mkdir -p ~/.config/mailbox
-cp $(npm prefix -g)/lib/node_modules/@leeguoo/mailbox-cli/examples/accounts.example.json \
-   ~/.config/mailbox/auth.json
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/examples/accounts.example.json \
+   -o ~/.config/mailbox/auth.json
 $EDITOR ~/.config/mailbox/auth.json
 
 # 3. (Recommended) install the persistent daemon for ~5-30× faster calls:
-mailbox daemon install
-mailbox daemon status --json   # confirm it's running
+mail-use daemon install
+mail-use daemon status --json   # confirm it's running
 
 # 4. (Optional) wire into Claude Desktop / Code via MCP:
-mailbox mcp config --json   # prints a paste-ready mcpServers entry
+mail-use mcp config --json   # prints a paste-ready mcpServers entry
 ```
 
 If the user hasn't done step 1, every CLI call will fail with `command not found`.
-Always probe with `mailbox --version` first when in doubt.
+Always probe with `mail-use --version` first when in doubt.
 
 ## How to drive this CLI from an agent loop
 
@@ -89,24 +90,24 @@ before continuing.
 ```bash
 # List recent emails (cache when warm; pass --live to force IMAP).
 # 'list' is INBOX-only — passing --folder all warns you to use 'search' instead.
-mailbox email list --account-id <id> --limit 20 --json
-mailbox email list --account-id <id> --limit 20 --with-preview 200 --json   # +body snippet, one trip
-mailbox email list --since 7d --json                 # --since is an alias of --date-from (7d/today/YYYY-MM-DD)
-mailbox email list --account-unread --json           # also compute account_unread_total (unread across all folders)
+mail-use email list --account-id <id> --limit 20 --json
+mail-use email list --account-id <id> --limit 20 --with-preview 200 --json   # +body snippet, one trip
+mail-use email list --since 7d --json                 # --since is an alias of --date-from (7d/today/YYYY-MM-DD)
+mail-use email list --account-unread --json           # also compute account_unread_total (unread across all folders)
 
 # Recent across ALL accounts, merged newest-first (omit --account-id == all accounts):
-mailbox email recent --limit 30 --json
-mailbox email recent --since 3d --json
+mail-use email recent --limit 30 --json
+mail-use email recent --since 3d --json
 
 # Search (server-side IMAP for Gmail; client-side fallback for QQ/163/Outlook):
-mailbox email search --from amazon --subject review --folder all --json
-mailbox email search --query "interview"  --since 2w --json    # relative dates: 2d/3w/1mo/today/yesterday
+mail-use email search --from amazon --subject review --folder all --json
+mail-use email search --query "interview"  --since 2w --json    # relative dates: 2d/3w/1mo/today/yesterday
 
 # ⚠️ search over QQ/163 (broken IMAP SEARCH) does a client-side scan of the folder and can be
 # slow. --timeout (default 60s) is a HARD wall-clock bound — even a single stuck QQ/163 scan
 # returns by then with partial results + timed_out:true (+ pending_accounts). Still prefer to
 # scope it (--account-id and/or --folder INBOX) and use a short --timeout for snappy results.
-mailbox email search --query inv --account-id <id> --folder INBOX --limit 20 --json   # fast, scoped
+mail-use email search --query inv --account-id <id> --folder INBOX --limit 20 --json   # fast, scoped
 
 # NOTE: on QQ/163/126/sina/aliyun/outlook, IMAP TEXT search is broken,
 # so the CLI falls back to envelope-only client-side filtering. That
@@ -117,33 +118,33 @@ mailbox email search --query inv --account-id <id> --folder INBOX --limit 20 --j
 
 # Read one or many emails (AI-friendly defaults: text only, capped 2000 chars, URLs stripped,
 # HTML excluded; HTML-only mail is auto-converted to a text body — see body_source).
-mailbox email show <gid> --json                    # gid = "<account_id>:<folder>:<uid>"
-mailbox email show <gid1> <gid2> <gid3> --json     # batch — one IMAP connection, spans folders
-mailbox email show <gid> --full --json             # raw HTML + uncapped + URLs (rarely needed)
-mailbox email show <gid> --text-only --json        # force no HTML (alias of --no-html)
-mailbox email show <gid> --html-max-len 0 --json   # 0 = strip HTML, -1 = unlimited, >0 = cap
+mail-use email show <gid> --json                    # gid = "<account_id>:<folder>:<uid>"
+mail-use email show <gid1> <gid2> <gid3> --json     # batch — one IMAP connection, spans folders
+mail-use email show <gid> --full --json             # raw HTML + uncapped + URLs (rarely needed)
+mail-use email show <gid> --text-only --json        # force no HTML (alias of --no-html)
+mail-use email show <gid> --html-max-len 0 --json   # 0 = strip HTML, -1 = unlimited, >0 = cap
 
 # Folders:
-mailbox email folders --account-id <id> --json
+mail-use email folders --account-id <id> --json
 ```
 
 The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` opens the
-right mailbox with no `--folder` — even for results from `search --folder all`. The legacy
+right mail-use with no `--folder` — even for results from `search --folder all`. The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
 
 ### Mutate (all dry-run by default)
 
 ```bash
-mailbox email mark <gid> --read --confirm --json
-mailbox email delete <gid> --confirm --json        # default moves to Trash; pass --permanent to expunge
-mailbox email flag <gid> --set --confirm --json
-mailbox email move <gid1> <gid2> --target-folder Archive --confirm --json
-mailbox email send --to a@b.com --subject hi --body "..." --confirm --json
+mail-use email mark <gid> --read --confirm --json
+mail-use email delete <gid> --confirm --json        # default moves to Trash; pass --permanent to expunge
+mail-use email flag <gid> --set --confirm --json
+mail-use email move <gid1> <gid2> --target-folder Archive --confirm --json
+mail-use email send --to a@b.com --subject hi --body "..." --confirm --json
 
 # Filtered batch mark/delete by sender/subject (no need to list+collect ids first):
-mailbox email delete --from newsletter@shop.com --confirm --json
-mailbox email mark   --subject "[ci]" --read --confirm --json
-mailbox email delete --from spam@x.com --all-folders --confirm --json   # span folders; grouped per folder
+mail-use email delete --from newsletter@shop.com --confirm --json
+mail-use email mark   --subject "[ci]" --read --confirm --json
+mail-use email delete --from spam@x.com --all-folders --confirm --json   # span folders; grouped per folder
 ```
 
 `gid`-based and filtered mutations are **folder-aware**: a 3-part gid mutates in *its* folder
@@ -159,10 +160,10 @@ command returns a JSON dry-run preview and changes nothing.
 
 ```bash
 # Classify INBOX and propose a deletion plan (read-only; never deletes):
-mailbox cleanup --account-id <id> --json
+mail-use cleanup --account-id <id> --json
 # Then actually delete the marketing + routine_notification candidates:
-mailbox cleanup --account-id <id> --confirm --json
-mailbox cleanup --categories marketing --confirm --json   # only one category
+mail-use cleanup --account-id <id> --confirm --json
+mail-use cleanup --categories marketing --confirm --json   # only one category
 ```
 
 `cleanup` buckets each email into `protected_finance` / `protected_travel` / `security` /
@@ -174,8 +175,8 @@ mailbox cleanup --categories marketing --confirm --json   # only one category
 ### Discover the surface
 
 ```bash
-mailbox account list --json
-mailbox <cmd> --help --json   # structured help: { name, description, options, arguments, subcommands }
+mail-use account list --json
+mail-use <cmd> --help --json   # structured help: { name, description, options, arguments, subcommands }
 ```
 
 ## Token-saving tips
@@ -186,7 +187,7 @@ mailbox <cmd> --help --json   # structured help: { name, description, options, a
 - **Batch `email show <gid1> <gid2> ...`** reuses one IMAP connection (and spans folders). Use it whenever you need ≥2 emails.
 - **`gid`** (returned in every list/search/show response) is the global ID `account_id:folder:uid` — pass it instead of bare UID + `--account-id`, and `show`/mutate auto-target its folder.
 - **Relative date shortcuts** (on `--since` / `--date-from`): `7d` (7 days ago), `3w`, `1mo`, `1y`, `12h`, `30m`, `today`, `yesterday`, `last-week`, `last-month`. ISO 8601 / `YYYY-MM-DD` still work.
-- **`mailbox <cmd> --help --json`** returns a JSON descriptor of arguments, options, defaults — use to introspect any command instead of parsing human text.
+- **`mail-use <cmd> --help --json`** returns a JSON descriptor of arguments, options, defaults — use to introspect any command instead of parsing human text.
 
 ## Output contract
 
@@ -227,12 +228,12 @@ mailbox <cmd> --help --json   # structured help: { name, description, options, a
 
 ## MCP server mode
 
-Instead of shelling out to the CLI, an AI client can call mailbox tools
+Instead of shelling out to the CLI, an AI client can call mail-use tools
 directly over MCP:
 
 ```bash
-mailbox mcp config --json   # prints an mcpServers entry to paste into the client config
-mailbox mcp serve           # run the server manually for testing (stdio)
+mail-use mcp config --json   # prints an mcpServers entry to paste into the client config
+mail-use mcp serve           # run the server manually for testing (stdio)
 ```
 
 16 tools registered: `account_list`, `account_test_connection`,
@@ -254,10 +255,10 @@ the daemon also runs a background SQLite sync so `email list` (without
 `--live`) usually doesn't touch IMAP at all.
 
 ```bash
-mailbox daemon install      # autostart at login (macOS launchd / Linux systemd-user)
-mailbox daemon status --json
-mailbox daemon reload       # drop pooled connections after editing auth.json
-mailbox daemon stop
+mail-use daemon install      # autostart at login (macOS launchd / Linux systemd-user)
+mail-use daemon status --json
+mail-use daemon reload       # drop pooled connections after editing auth.json
+mail-use daemon stop
 ```
 
 Set `MAILBOX_NO_DAEMON=1` to skip the daemon probe entirely.
@@ -273,6 +274,7 @@ Measured (Gmail INBOX, M2 MacBook over residential WAN):
 
 ## Reference
 
-- Repo: https://github.com/leeguooooo/Mailbox
-- npm: https://www.npmjs.com/package/@leeguoo/mailbox-cli
+- Install this skill: `npx skills add leeguooooo/mail-use --skill mail-use` (add `-g` for user scope)
+- Repo: https://github.com/leeguooooo/mail-use
+- npm: https://www.npmjs.com/package/@leeguoo/mail-use
 - JSON contract docs: `docs/CLI_JSON_CONTRACT.md`

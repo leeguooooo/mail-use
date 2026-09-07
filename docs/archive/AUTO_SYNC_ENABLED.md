@@ -72,7 +72,7 @@ def stop_background_sync():
 ```python
 async def main():
     """Main entry point for the email MCP server"""
-logger.info("Starting Mailbox (Legacy)...")
+logger.info("Starting mail-use (Legacy)...")
     
     # Create server instance
 server = Server("mailbox")
@@ -95,7 +95,7 @@ server = Server("mailbox")
     
     finally:
         # ✅ Ensure background sync is stopped cleanly
-logger.info("Shutting down Mailbox...")
+logger.info("Shutting down mail-use...")
         stop_background_sync()
 ```
 
@@ -216,7 +216,7 @@ Clean exit ✅
    ```bash
    # 按 Ctrl+C
    # 查看日志:
-# ✅ "Shutting down Mailbox..."
+# ✅ "Shutting down mail-use..."
    # ✅ "Background sync scheduler stopped"
    ```
 

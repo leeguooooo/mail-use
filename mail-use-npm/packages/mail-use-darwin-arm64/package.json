@@ -1,11 +1,11 @@
 {
-  "name": "@leeguoo/mailbox-cli-darwin-x64",
+  "name": "@leeguoo/mail-use-darwin-arm64",
   "version": "0.0.0",
-  "description": "Mailbox CLI binary for darwin x64",
+  "description": "mail-use CLI binary for darwin arm64",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/leeguooooo/Mailbox"
+    "url": "https://github.com/leeguooooo/mail-use"
   },
   "publishConfig": {
     "access": "public"
@@ -14,7 +14,7 @@
     "darwin"
   ],
   "cpu": [
-    "x64"
+    "arm64"
   ],
   "main": "index.js",
   "files": [

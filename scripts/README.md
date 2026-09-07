@@ -4,8 +4,8 @@ This directory contains build helpers for the Node CLI rewrite.
 
 Key scripts:
 
-- `scripts/build_binary.js`: builds a `pkg`-based `mailbox` binary and copies it
-  into the appropriate `mailbox-cli/packages/<platform>/bin/` directory.
+- `scripts/build_binary.js`: builds a `pkg`-based `mail-use` binary and copies it
+  into the appropriate `mail-use-npm/packages/<platform>/bin/` directory.
 - `scripts/unsubscribe.mjs`: bulk unsubscribe helper. Reads `account_id<TAB>from_substring`
   lines from stdin or a file, extracts each sender's `List-Unsubscribe` header,
   sends mailto unsubscribes via SMTP and opens https one-click links in your
