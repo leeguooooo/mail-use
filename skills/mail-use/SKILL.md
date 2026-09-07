@@ -84,6 +84,24 @@ Always probe with `mail-use --version` first when in doubt.
 Always pass `--json` so the response is machine-parseable. Check `success`
 before continuing.
 
+### The one-shot shortcut: "what's my verification code?"
+
+```bash
+mail-use code --json                       # newest OTP across all accounts, last 30m, one live pass
+mail-use code --since 2h --json            # widen the window
+mail-use code --account-id <id> --all --json   # every code-bearing email, not just the newest
+```
+
+Answers the single most common reason an agent opens a mailbox, without the
+list → guess → show round-trip. Returns `{ code, newest: {...}, candidates: [...],
+scanned, matched }`; `code` is `null` (with a widening `hint`) when nothing matched —
+that is a successful call, not an error. Each hit carries `confidence`
+(`high`/`medium`/`low`) from how close the token sits to a code keyword.
+
+**Always live** — an OTP served from a cache snapshot is a wrong OTP. Selection
+requires a code keyword in the mail (`verification code` / `認証コード` / `验证码` / …),
+so ordinary mail carrying stray digits is not mistaken for a code email.
+
 ### Read / search
 
 ```bash

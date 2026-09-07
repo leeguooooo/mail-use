@@ -351,6 +351,67 @@ function extractCodes(text) {
   return out;
 }
 
+// The keyword vocabulary above, on its own — used to decide whether an email is
+// a verification email at all, rather than to pull a code out of one.
+const _CODE_KEYWORD_RE = new RegExp(
+  'verification\\s+code|confirmation\\s+code|security\\s+code|one[- ]time\\s+(?:code|password)|' +
+    'verify|passcode|pin\\s*code|access\\s+code|\\botp\\b|\\bcode\\b|' +
+    '\\u8a8d\\u8a3c\\u30b3\\u30fc\\u30c9|\\u78ba\\u8a8d\\u30b3\\u30fc\\u30c9|\\u30ef\\u30f3\\u30bf\\u30a4\\u30e0\\u30d1\\u30b9\\u30ef\\u30fc\\u30c9|\\u30b3\\u30fc\\u30c9|\\u8a8d\\u8a3c\\u756a\\u53f7|' +
+    '\\u9a8c\\u8bc1\\u7801|\\u52a8\\u6001\\u7801|\\u6821\\u9a8c\\u7801|' +
+    '\\uc778\\uc99d\\ubc88\\ud638',
+  'gi',
+);
+
+// extractCodes is deliberately permissive: it assumes you already know the mail
+// is a verification mail and just want every candidate out of it. Pointing it at
+// an arbitrary inbox to answer "which mail carries my code?" misfires badly — a
+// service-termination notice scores its own "2026" as a code.
+//
+// This is the selector: it answers "does this email carry a one-time code, and
+// which token is it?" and returns null when the answer is no. The gate is a code
+// keyword somewhere in the text; the ranking is proximity to that keyword, with
+// shape as the tie-break.
+function pickVerificationCode(text) {
+  const s = String(text || "");
+  if (!s) return null;
+
+  _CODE_KEYWORD_RE.lastIndex = 0;
+  const keywordAt = [];
+  for (const m of s.matchAll(_CODE_KEYWORD_RE)) keywordAt.push(m.index);
+  if (!keywordAt.length) return null; // not a verification email
+
+  const candidates = extractCodes(s);
+  if (!candidates.length) return null;
+
+  const yearLike = (c) => /^(19|20)\d{2}$/.test(c);
+  const scored = [];
+  for (const code of candidates) {
+    const at = s.indexOf(code);
+    if (at < 0) continue;
+    const distance = Math.min(...keywordAt.map((k) => Math.abs(k - at)));
+    // A bare year is only a code when it sits right on top of the keyword;
+    // anywhere else it is a date, a copyright line, or a price.
+    if (yearLike(code) && distance > 30) continue;
+    let score = 0;
+    if (distance <= 40) score += 100;
+    else if (distance <= 120) score += 60;
+    else if (distance <= 400) score += 20;
+    if (/^[A-Z]{1,4}-\d{4,8}$/i.test(code)) score += 40; // "G-123456" is unambiguous
+    if (/^\d{6}$/.test(code)) score += 25; // the overwhelmingly common OTP shape
+    else if (/^\d{4,8}$/.test(code)) score += 10;
+    if (/[A-Za-z]/.test(code) && /\d/.test(code)) score += 15; // mixed alnum
+    scored.push({ code, score, distance });
+  }
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score || a.distance - b.distance);
+  const best = scored[0];
+  return {
+    code: best.code,
+    confidence: best.score >= 100 ? "high" : best.score >= 60 ? "medium" : "low",
+    others: scored.slice(1, 4).map((c) => c.code),
+  };
+}
+
 module.exports = {
   parseGlobalFlags,
   parseFormatModes,
@@ -360,6 +421,7 @@ module.exports = {
   ensureSuccessField,
   exitCodeForResult,
   extractCodes,
+  pickVerificationCode,
   handleJsonOrText,
   invalidUsage,
   inferErrorCode,

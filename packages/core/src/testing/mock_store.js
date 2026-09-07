@@ -43,6 +43,22 @@ function _ensureState() {
                     },
                   ],
                 },
+                {
+                  uid: 103,
+                  messageId: "<m103@example.com>",
+                  subject: "Your verification code",
+                  from: "no-reply@auth.example.com",
+                  to: "mock@example.com",
+                  cc: "",
+                  date: "2026-02-01 02:00:00",
+                  // Seen on purpose: unread_stats tests assert exact unread
+                  // counts for this fixture, and this row exists for the code
+                  // selector, which doesn't care about read state.
+                  flags: new Set(["\\Seen"]),
+                  body: "Your verification code is 483920. It expires in 10 minutes.",
+                  html: "",
+                  attachments: [],
+                },
               ],
             },
             Trash: { messages: [] },

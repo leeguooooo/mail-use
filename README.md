@@ -88,6 +88,9 @@ Config locations:
 # CLI help
 mail-use --help
 
+# newest verification code across all accounts, one live pass
+mail-use code --json
+
 # list accounts
 mail-use account list --json
 
