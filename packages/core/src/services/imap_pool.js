@@ -1,5 +1,5 @@
 // Per-account persistent ImapFlow connection pool. Lives in a long-running
-// process (the mailbox daemon). Each account gets up to MAX_CLIENTS_PER_ACCOUNT
+// process (the mail-use daemon). Each account gets up to MAX_CLIENTS_PER_ACCOUNT
 // long-lived connections (default 3); concurrent requests on the same
 // account run on different clients in parallel instead of serializing
 // behind a mutex. Each client sends NOOP every 25 minutes so the server's
