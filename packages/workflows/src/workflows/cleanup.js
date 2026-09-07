@@ -105,7 +105,6 @@ async function apply({
 
   const results = [];
   for (const g of groups.values()) {
-    // eslint-disable-next-line no-await-in-loop
     const r = await email.deleteEmails({
       email_ids: g.uids,
       folder: g.folder,

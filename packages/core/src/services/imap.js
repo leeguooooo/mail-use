@@ -63,7 +63,6 @@ async function testConnection(account, folder) {
     try {
       if (typeof client.mailboxOpen === "function") {
         // Ensure mailbox is selected and mailbox stats are updated.
-        // eslint-disable-next-line no-await-in-loop
         await client.mailboxOpen(openFolder);
       }
 

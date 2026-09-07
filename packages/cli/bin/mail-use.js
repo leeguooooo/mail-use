@@ -2,7 +2,6 @@
 
 function ensureTracingChannelCompat() {
   try {
-    // eslint-disable-next-line import/no-extraneous-dependencies, global-require
     const diag = require("diagnostics_channel");
     if (diag && typeof diag.tracingChannel !== "function") {
       diag.tracingChannel = (name) => {
@@ -38,10 +37,7 @@ ensureTracingChannelCompat();
 const { main } = require("../src/main");
 
 Promise.resolve()
-  .then(async () => {
-    const argv = process.argv.slice(2);
-    return await main(argv);
-  })
+  .then(() => main(process.argv.slice(2)))
   .then((code) => {
     process.exit(typeof code === "number" ? code : 0);
   })

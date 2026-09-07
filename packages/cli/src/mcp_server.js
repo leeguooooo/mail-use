@@ -12,7 +12,7 @@ const { z } = require("zod");
 const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
 
-const { accounts, email, sync, digest, monitor, inbox, cleanup } = makeProxies();
+const { accounts, email, sync, digest, inbox, cleanup } = makeProxies();
 
 // Common Zod fragments
 const accountIdOpt = z.string().min(1).optional().describe("Account id (e.g. 'leeguooooo_gmail') or email address. Pass either this OR a gid (account_id:uid) inline with email_id.");
@@ -421,7 +421,6 @@ function _resolveRefs(ids, explicitAccountId) {
 async function _folderGroups(refs, accountId, explicitFolder) {
   const groups = new Map();
   for (const r of refs) {
-    // eslint-disable-next-line no-await-in-loop
     const folder = explicitFolder
       ? explicitFolder
       : await email.resolveEmailFolder({ account_id: accountId, uid: r.id, folder: r.folder });
@@ -437,7 +436,6 @@ async function _folderGroups(refs, accountId, explicitFolder) {
 async function _mutateByFolder(groups, mk) {
   const results = [];
   for (const [folder, ids] of groups) {
-    // eslint-disable-next-line no-await-in-loop
     results.push({ folder, ...(await mk(ids, folder)) });
   }
   if (results.length === 1) return results[0];

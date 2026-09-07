@@ -23,8 +23,6 @@
     "vitest": "^2.1.8"
   },
   "scripts": {
-    "test": "vitest run",
-    "lint": "node -e \"console.log('no lint configured')\"",
-    "format": "node -e \"console.log('no format configured')\""
+    "test": "vitest run"
   }
 }

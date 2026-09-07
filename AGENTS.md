@@ -12,6 +12,7 @@
 ## Build, Test, and Development Commands
 - Install dependencies: `pnpm install`
 - Run tests: `pnpm test`
+- Lint: `pnpm lint` (`pnpm lint:fix` to autofix). CI runs it before the tests.
 - Build local pkg binary into `dist/mail-use`: `pnpm build:binary`
 - Run dev CLI: `pnpm -C packages/cli test` or `node packages/cli/bin/mail-use.js --help`
 

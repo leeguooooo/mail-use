@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint
+        run: pnpm lint
+
       - name: Run tests
         # Tests use mocked IMAP via MAILBOX_INTERNAL_TEST_MODE; explicitly
         # disable any persistent daemon probe so a stray socket from a

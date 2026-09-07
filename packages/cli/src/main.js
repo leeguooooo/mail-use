@@ -325,7 +325,7 @@ async function _searchFilteredEmailTargets(opts) {
 }
 
 async function _applyFilteredEmailMutation({ operation, opts, targets, groups, markAs, skipped }) {
-  if (Boolean(opts.dryRun) || !Boolean(opts.confirm)) {
+  if (Boolean(opts.dryRun) || !opts.confirm) {
     return _filteredDryRunResult({
       operation,
       targets,
@@ -338,7 +338,6 @@ async function _applyFilteredEmailMutation({ operation, opts, targets, groups, m
 
   const results = [];
   for (const g of groups.values()) {
-    // eslint-disable-next-line no-await-in-loop
     const result = operation === "delete"
       ? await email.deleteEmails({
         email_ids: g.uids,
@@ -383,7 +382,6 @@ async function _applyIdRefMutation({ operation, refs, accountId, defaultFolder, 
   }
   const results = [];
   for (const [folder, emailIds] of groups) {
-    // eslint-disable-next-line no-await-in-loop
     const res = operation === "delete"
       ? await email.deleteEmails({
         email_ids: emailIds,
@@ -574,7 +572,6 @@ function _resolveCliVersion() {
   // real version even though it can't read package.json at runtime. Skipped when
   // still the "0.0.0" default (dev / unstamped) so we fall through to package.json.
   try {
-    // eslint-disable-next-line global-require
     const baked = require("./_version.js");
     if (baked && typeof baked === "string" && baked.trim() && baked.trim() !== "0.0.0") {
       return baked.trim();
@@ -784,7 +781,6 @@ async function main(argv) {
             };
 
             try {
-              // eslint-disable-next-line no-await-in-loop
               const im = await imap.testConnection(a, "INBOX");
               item.imap = { success: Boolean(im && im.success), total_emails: im.total_emails || 0, unread_emails: im.unread_emails || 0 };
               if (im && im.error) item.imap.error = im.error;
@@ -793,7 +789,6 @@ async function main(argv) {
             }
 
             try {
-              // eslint-disable-next-line no-await-in-loop
               const sm = await smtp.testConnection(a);
               item.smtp = { success: Boolean(sm && sm.success) };
               if (sm && sm.error) item.smtp.error = sm.error;
@@ -867,7 +862,7 @@ async function main(argv) {
         from: opts.from || "",
         date_from: dateFromExpanded,
         date_to: dateToExpanded,
-        use_cache: !Boolean(opts.live),
+        use_cache: !opts.live,
         preview_chars: previewChars,
         include_account_unread: Boolean(opts.accountUnread),
       });
@@ -876,7 +871,7 @@ async function main(argv) {
       result.offset = paging.offset;
       result.unread_only = Boolean(opts.unreadOnly);
       result.folder = opts.folder;
-      result.use_cache = !Boolean(opts.live);
+      result.use_cache = !opts.live;
       if (opts.dateFrom) result.date_from = opts.dateFrom;
       if (opts.dateTo) result.date_to = opts.dateTo;
       if (opts.accountId) result.account_id = opts.accountId;
@@ -915,7 +910,7 @@ async function main(argv) {
         folder: "INBOX",
         account_id: opts.accountId || "",
         date_from: sinceExpanded,
-        use_cache: !Boolean(opts.live),
+        use_cache: !opts.live,
         include_account_unread: Boolean(opts.accountUnread),
       });
       result.command = "recent";
@@ -1012,7 +1007,7 @@ async function main(argv) {
       let htmlMax = Number.isFinite(htmlMaxRaw) ? htmlMaxRaw : (opts.full ? -1 : 0);
       let includeHtml = opts.full ? true : Boolean(opts.includeHtml);
       if (opts.html === false || opts.textOnly) includeHtml = false; // --no-html / --text-only win
-      let stripUrls = opts.full ? false : !Boolean(opts.keepUrls);
+      let stripUrls = opts.full ? false : !opts.keepUrls;
       if (opts.stripUrls) stripUrls = true;
       if (opts.preview) {
         bodyMax = 400;
@@ -1113,7 +1108,7 @@ async function main(argv) {
         const rc = contract.invalidUsage({ message: refs.error, asJson, pretty });
         return process.exit(rc);
       }
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const result = await _applyIdRefMutation({
         operation: "mark",
         refs: refs.refs,
@@ -1178,7 +1173,7 @@ async function main(argv) {
         const rc = contract.invalidUsage({ message: refs.error, asJson, pretty });
         return process.exit(rc);
       }
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const result = await _applyIdRefMutation({
         operation: "delete",
         refs: refs.refs,
@@ -1233,7 +1228,7 @@ async function main(argv) {
         const rc = contract.invalidUsage({ message: e && e.message ? e.message : "Failed to read attachment", asJson, pretty });
         process.exit(rc);
       }
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       if (dryRun) {
         const result = {
           success: true,
@@ -1307,7 +1302,7 @@ async function main(argv) {
         const rc = contract.invalidUsage({ message: e && e.message ? e.message : "Failed to read attachment", asJson, pretty });
         process.exit(rc);
       }
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const ref = _parseEmailRef(emailId);
       const explicitFolder = _explicitOptionValue(cmd, opts, "folder");
       const result = await email.replyEmail({
@@ -1336,7 +1331,7 @@ async function main(argv) {
     .option("--confirm", "Actually send (default: dry-run)")
     .option("--dry-run")
     .action(async (emailId, opts, cmd) => {
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const ref = _parseEmailRef(emailId);
       const explicitFolder = _explicitOptionValue(cmd, opts, "folder");
       const result = await email.forwardEmail({
@@ -1404,7 +1399,7 @@ async function main(argv) {
       }
 
       const setFlag = set;
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const result = await email.flagEmail({
         email_id: refs.ids[0],
         set_flag: setFlag,
@@ -1436,7 +1431,7 @@ async function main(argv) {
         const rc = contract.invalidUsage({ message: refs.error || "Missing --account-id (or pass gids like account_id:uid)", asJson, pretty });
         process.exit(rc);
       }
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const result = await email.moveEmails({
         email_ids: refs.ids,
         target_folder: opts.targetFolder,
@@ -1499,11 +1494,9 @@ async function main(argv) {
       const stop = _createStopSignal();
       try {
         while (!stop.stopped()) {
-          // eslint-disable-next-line no-await-in-loop
           const status = await sync.status();
           status.success = true;
           printJson(status, Boolean(pretty) || !asJson);
-          // eslint-disable-next-line no-await-in-loop
           await stop.sleep(intervalSec * 1000);
         }
         return process.exit(0);
@@ -1524,10 +1517,8 @@ async function main(argv) {
       const stop = _createStopSignal();
       try {
         while (!stop.stopped()) {
-          // eslint-disable-next-line no-await-in-loop
           await sync.force({ account_id: opts.accountId || "", full: Boolean(opts.full) });
           if (stop.stopped()) break;
-          // eslint-disable-next-line no-await-in-loop
           await stop.sleep(intervalSec * 1000);
         }
         return process.exit(0);
@@ -1638,7 +1629,7 @@ async function main(argv) {
         const rc = contract.invalidUsage({ message: paging.error, asJson, pretty });
         return process.exit(rc);
       }
-      const confirm = Boolean(opts.confirm) && !Boolean(opts.dryRun);
+      const confirm = Boolean(opts.confirm) && !opts.dryRun;
       const base = {
         account_id: opts.accountId || "",
         folder: opts.folder,
@@ -1676,7 +1667,7 @@ async function main(argv) {
     .option("--dry-run")
     .option("--debug-path <path>")
     .action(async (opts) => {
-      const dryRun = Boolean(opts.dryRun) || !Boolean(opts.confirm);
+      const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const result = await digest.run({ dry_run: dryRun, debug_path: opts.debugPath || "" });
       if (dryRun && !opts.dryRun && result && typeof result === "object") {
         result.confirmation_required = true;
@@ -1704,10 +1695,8 @@ async function main(argv) {
       const stop = _createStopSignal();
       try {
         while (!stop.stopped()) {
-          // eslint-disable-next-line no-await-in-loop
           await digest.run({ dry_run: Boolean(opts.dryRun), debug_path: "" });
           if (stop.stopped()) break;
-          // eslint-disable-next-line no-await-in-loop
           await stop.sleep(intervalSec * 1000);
         }
         return process.exit(0);

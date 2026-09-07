@@ -19,7 +19,7 @@ const path = require("path");
 
 const core = require("@mail-use/core");
 const { ImapPool } = require("@mail-use/core/src/services/imap_pool");
-const { workflows, digest, monitor, inbox, cleanup } = (() => {
+const { digest, monitor, inbox, cleanup } = (() => {
   try { return require("@mail-use/workflows"); } catch { return {}; }
 })();
 
@@ -50,7 +50,10 @@ function _resolveFn(fnName) {
   return fn.bind(obj);
 }
 
-async function startDaemon({ foreground = true, log = console.error, syncIntervalMs = 0, syncAccountId = "" } = {}) {
+// `foreground` is accepted and ignored: startDaemon always runs in the
+// caller's process, and detaching is launchd/systemd/nohup's job. Kept in the
+// signature so the existing call site reads intentionally.
+async function startDaemon({ foreground: _foreground = true, log = console.error, syncIntervalMs = 0, syncAccountId = "" } = {}) {
   const sockPath = getSocketPath();
   fs.mkdirSync(path.dirname(sockPath), { recursive: true });
 

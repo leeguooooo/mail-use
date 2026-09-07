@@ -15,8 +15,6 @@
     "vitest": "^2.1.9"
   },
   "scripts": {
-    "test": "vitest run --passWithNoTests",
-    "lint": "node -e \"console.log('no lint configured')\"",
-    "format": "node -e \"console.log('no format configured')\""
+    "test": "vitest run --passWithNoTests"
   }
 }

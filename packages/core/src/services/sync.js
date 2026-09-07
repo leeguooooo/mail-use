@@ -93,13 +93,11 @@ async function force({ account_id = "", full = false } = {}) {
   for (const a of target) {
     const email = require("./email");
     try {
-      // eslint-disable-next-line no-await-in-loop
       const listRes = await email.listEmails({ limit: 200, offset: 0, unread_only: false, folder: "INBOX", account_id: a.id, use_cache: false, include_server_uids: true });
 
       // Single write session per account: one DB open, one flush, one file
       // lock. Prevents lost updates across concurrent CLI invocations and
       // the within-account upsertAccount → upsertFolder → upsertEmails race.
-      // eslint-disable-next-line no-await-in-loop
       await syncDb.withWriteSession(pc.emailSyncDb, (s) => {
         s.upsertAccount({ id: a.id, email: a.email, provider: a.provider || "custom" });
         const folderId = s.upsertFolder({

@@ -37,7 +37,6 @@ function readConfigToml(configTomlPath) {
   try {
     if (!fs.existsSync(configTomlPath)) return {};
     // Use dynamic require so the shared package stays lightweight.
-    // eslint-disable-next-line global-require
     const toml = require("toml");
     return toml.parse(fs.readFileSync(configTomlPath, "utf8"));
   } catch {

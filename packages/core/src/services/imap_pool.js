@@ -63,7 +63,7 @@ class AccountPool {
       return e;
     }
     // 4. Wait for someone to release.
-    return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
+    return new Promise((resolve, reject) => { this.waiters.push({ resolve, reject }); });
   }
 
   release(entry) {
@@ -191,7 +191,6 @@ class ImapPool {
 
   async closeAll() {
     for (const p of this._pools.values()) {
-      // eslint-disable-next-line no-await-in-loop
       await p.closeAll();
     }
     this._pools.clear();

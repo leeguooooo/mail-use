@@ -51,8 +51,7 @@ async function _acquireLock(dbPath, { retries = 100, delayMs = 50 } = {}) {
           continue;
         }
       } catch { /* lock disappeared, retry */ }
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r) => setTimeout(r, delayMs));
+      await new Promise((r) => { setTimeout(r, delayMs); });
     }
   }
   throw new Error(`sync_db: could not acquire lock at ${lockPath}`);

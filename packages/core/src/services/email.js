@@ -274,7 +274,6 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
       };
       if (wantPreview && msg.source) {
         try {
-          // eslint-disable-next-line no-await-in-loop
           const parsed = await _safeParse(msg.source);
           const txt = String(parsed.text || "").replace(/\s+/g, " ").trim();
           item.preview = txt.slice(0, previewChars);
@@ -295,7 +294,6 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
         const folders = _selectableFoldersFor(mailboxes);
         let sum = 0;
         for (const fpath of folders) {
-          // eslint-disable-next-line no-await-in-loop
           const ss = await client.status(fpath, { unseen: true });
           if (ss && ss.unseen != null) sum += Number(ss.unseen);
         }
@@ -472,7 +470,6 @@ async function listEmails({
 
     for (const acc of list) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         const r = await _fetchEmailsForAccount({
           account: acc,
           folder,
@@ -784,7 +781,6 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
           };
           if (wantPreview && msg.source) {
             try {
-              // eslint-disable-next-line no-await-in-loop
               const parsed = await _safeParse(msg.source);
               const txt = String(parsed.text || "").replace(/\s+/g, " ").trim();
               item.preview = txt.slice(0, previewChars);
@@ -834,7 +830,6 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
             break;
           }
           try {
-            // eslint-disable-next-line no-await-in-loop
             const part = await _searchOneFolder(client, acc, fp);
             totalCombined += part.total_found;
             emailsCombined.push(...part.emails);
@@ -852,7 +847,6 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
       // so a single un-cooperative imap op (QQ/163 scan / stuck connect) can't
       // blow past --timeout. On timeout we keep the partial emails gathered so far.
       const remaining = timeoutMs > 0 ? Math.max(0, started + timeoutMs - Date.now()) : 0;
-      // eslint-disable-next-line no-await-in-loop
       const r = await _raceTimeout(accountWork, remaining, () => {
         timed_out = true;
         pending_accounts.push(acc.id || acc.email || "");
@@ -1181,7 +1175,6 @@ async function showEmails({
     const failed_ids = [];
     for (const id of ids) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         const msg = await client.fetchOne(
           Number(id),
           { envelope: true, flags: true, internalDate: true, bodyStructure: true, source: true },
@@ -1191,7 +1184,6 @@ async function showEmails({
           failed_ids.push({ id, error: "not_found" });
           continue;
         }
-        // eslint-disable-next-line no-await-in-loop
         const parsed = await _safeParse(msg.source);
         const flags = msg.flags || new Set([]);
         const attachments = (parsed.attachments || []).map((a) => ({
@@ -1286,7 +1278,6 @@ async function showEmailsResolved({ refs = [], account_id = "", ...opts } = {}) 
   // Resolve a folder for every ref (gid folder -> cache -> INBOX), then group.
   const byFolder = new Map();
   for (const r of list) {
-    // eslint-disable-next-line no-await-in-loop
     const folder = await resolveEmailFolder({ account_id: acc.account.id, uid: r.id, folder: r.folder });
     if (!byFolder.has(folder)) byFolder.set(folder, []);
     byFolder.get(folder).push(r.id);
@@ -1297,7 +1288,6 @@ async function showEmailsResolved({ refs = [], account_id = "", ...opts } = {}) 
   for (const [folder, ids] of byFolder) {
     let res;
     try {
-      // eslint-disable-next-line no-await-in-loop
       res = await showEmails({ email_ids: ids, folder, account_id, ...opts });
     } catch (e) {
       // A folder that can't be opened (stale/renamed/deleted) must not sink the
@@ -1354,7 +1344,6 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
     const results = [];
     for (const uid of uids) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         if (markAs === "read") await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
         else await client.messageFlagsRemove(uid, ["\\Seen"], { uid: true });
         results.push({ success: true, email_id: String(uid), folder: openFolder, account_id: acc.account.id });
@@ -1485,15 +1474,12 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
 
     for (const uid of uids) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         const sourceExists = await _uidExistsInFolder(client, openFolder, uid);
         if (!sourceExists) {
           let foundInTrash = false;
           let existingTrashName = "";
           try {
-            // eslint-disable-next-line no-await-in-loop
             existingTrashName = await ensureTrashName();
-            // eslint-disable-next-line no-await-in-loop
             foundInTrash = existingTrashName !== openFolder && await _uidExistsInFolder(client, existingTrashName, uid);
           } catch {
             foundInTrash = false;
@@ -1517,9 +1503,7 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
           }
           continue;
         }
-        // eslint-disable-next-line no-await-in-loop
         await client.mailboxOpen(openFolder);
-        // eslint-disable-next-line no-await-in-loop
         if (permanent) await client.messageDelete(uid, { uid: true });
         else await client.messageMove(uid, trashName, { uid: true });
         results.push({ success: true, email_id: String(uid), folder: openFolder, account_id: acc.account.id });
@@ -2018,7 +2002,6 @@ async function moveEmails({ email_ids, target_folder, source_folder = "INBOX", a
     let moved = 0;
     for (const uid of ids) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         await client.messageMove(uid, tgt, { uid: true });
         moved += 1;
       } catch {
@@ -2079,7 +2062,7 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
 
   let stopped = false;
   let resolveDone;
-  const done = new Promise((r) => (resolveDone = r));
+  const done = new Promise((r) => { resolveDone = r; });
 
   await client.connect();
   await client.mailboxOpen(openFolder);
@@ -2102,7 +2085,6 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
         if (!lastUid) break;
         try {
           const since = `${lastUid}:*`;
-          // eslint-disable-next-line no-await-in-loop
           for await (const msg of client.fetch(
             since,
             { envelope: true, flags: true, internalDate: true, bodyStructure: true },
@@ -2176,7 +2158,7 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
           try { onEvent({ type: "idle_error", error: e && e.message ? e.message : String(e) }); } catch { /* ignore */ }
         }
         // Brief backoff before re-issuing IDLE.
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => { setTimeout(r, 2000); });
       }
     }
   })();
