@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-09-07
+
+Renamed the project from **Mailbox** to **mail-use**, joining the `*-use` family
+(chrome-use, iphone-use, wechat-use, …). Two breaking changes, both listed below.
+
+### ⚠️ Breaking
+
+- **The command is now `mail-use`.** `install.sh` drops a `mailbox` symlink beside it,
+  so existing scripts and skills keep working — but `mail-use` is the name going forward.
+- **No more npm package.** Distribution is GitHub Release binaries only. Publishing to
+  npmjs.com required an `NPM_TOKEN` plus account 2FA on every write, which repeatedly
+  blocked releases. `@leeguoo/mailbox-cli` and its three platform packages are deprecated
+  on npm and frozen at 2.10.1.
+
+### Changed
+
+- Repository moved to `github.com/leeguooooo/mail-use` (the old URL 301-redirects).
+- Release assets renamed to `mail-use-<target>.tar.gz`. `install.sh` falls back to the old
+  `mailbox-<target>.tar.gz` name, so pinning an older tag still works.
+- Skill renamed to `mail-use`; install it with
+  `npx skills add leeguooooo/mail-use --skill mail-use`.
+- MCP server identifies itself as `mail-use`, and `mcp config` emits a `mail-use` key.
+- New env vars `MAIL_USE_VERSION` / `MAIL_USE_INSTALL_DIR` for the installer; the `MAILBOX_*`
+  names are still honored.
+
+### Removed
+
+- `.github/workflows/publish-npm.yml`, the `mail-use-npm/` launcher and platform packages,
+  and `scripts/set_release_version.js` — all of which existed only to feed the npm registry.
+
+### Unchanged on purpose
+
+These identify state that already exists on a user's machine; renaming them would break
+working installs on upgrade:
+
+- Config and data directories `~/.config/mailbox` and `~/.local/share/mailbox`
+- The `MAILBOX_*` environment variables that pair with them
+- The launchd label `com.leeguoo.mailbox.daemon` and systemd unit `mailbox-daemon.service`
+- IMAP domain terms in the code (`client.mailbox`, `getMailbox()`, "mailbox not found")
+  refer to mail folders, not to the product
+
+---
+
+> **Note on the 1.3.0 → 3.0.0 gap:** the 2.x line was the Node rewrite, released through
+> semantic-release with notes written to [GitHub Releases](https://github.com/leeguooooo/mail-use/releases)
+> rather than to this file. See there for per-version detail.
+
 ## [1.3.0] - 2025-10-17
 
 ### Added
