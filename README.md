@@ -1,20 +1,51 @@
-# mail-use CLI
+# mail-use
 
-CLI-first email management for multi-account IMAP/SMTP with a local sync cache.
+**Email, as something an AI agent can actually operate.** One CLI over Gmail, QQ,
+163, Outlook and any IMAP/SMTP box — every command speaks JSON, every destructive
+one is dry-run until you pass `--confirm`.
 
-Primary interface: the `mail-use` CLI (Node.js implementation). Ships prebuilt
-platform binaries — no Python, no Node required for end users.
+```bash
+mail-use code --json          # the newest verification code, one live pass
+mail-use email recent --format compact --json
+mail-use email delete --from newsletter@shop.com --confirm --json
+```
+
+Part of the [`*-use` family](#the--use-family) — small tools that each give an agent
+hands on one real thing.
+
+### Why this and not an IMAP snippet
+
+- **A stable JSON contract, not scraped text.** Every response carries
+  `success: boolean`, and failures carry `error_code` from a fixed set
+  (`auth_failed`, `folder_not_found`, `imap_error`, …). Documented in
+  [`docs/CLI_JSON_CONTRACT.md`](docs/CLI_JSON_CONTRACT.md).
+- **It tells you when it might be wrong.** Cached reads report `from_cache`,
+  `cache_age_seconds` and `cache_stale`, and a snapshot old enough to mean "nothing
+  is syncing" is refused in favour of a live fetch. An empty inbox is never a silent
+  "nothing arrived".
+- **Destructive by consent only.** `delete` / `mark` / `move` / `send` return a
+  dry-run preview — grouped per account and folder, with sample subjects — and change
+  nothing until `--confirm`. `--all-folders` skips Sent/Drafts/Junk/Trash unless asked.
+- **Built for token budgets.** `--format compact` projects each email to the ten
+  fields worth scanning (~30% smaller than the full shape), `--with-preview` folds a
+  body snippet into the list call, and batch `show` reuses one IMAP connection.
+- **Fast enough to call in a loop.** A persistent daemon pools IMAP connections and
+  syncs to local SQLite in the background: five sequential `email list` calls go from
+  25s to 0.83s. See [the table below](#persistent-daemon-5-30-faster-cli-calls).
+- **MCP too.** `mail-use mcp config --json` prints a paste-ready entry; the server
+  exposes 16 tools with the same dry-run defaults.
 
 > Renamed from **Mailbox** to **mail-use**. The command is now `mail-use`; `mailbox` still
 > works as an alias, and your config in `~/.config/mailbox` is untouched.
 
-## Supported Providers
+## Supported providers
 
-- 163 Mail (mail.163.com / mail.126.com)
-- QQ Mail (mail.qq.com)
-- Gmail (mail.google.com)
-- Outlook/Hotmail
-- Custom IMAP servers
+163 / 126 · QQ · Gmail · Outlook / Hotmail · any custom IMAP+SMTP server.
+
+Search behaves differently per provider and the CLI says so: Gmail searches bodies
+server-side via `X-GM-RAW`, while QQ/163/Outlook have broken IMAP TEXT search, so
+`--query` falls back to matching subject + sender only. Use `--from` / `--subject`
+there for predictable results.
 
 ## Install
 
@@ -125,6 +156,29 @@ mail-use sync force --json
 mail-use sync init
 mail-use sync daemon
 ```
+
+## Persistent daemon (5-30× faster CLI calls)
+
+Each one-shot invocation otherwise spends 1-3s on TCP+TLS+IMAP LOGIN. With the daemon
+running, calls reuse pooled connections and a background SQLite sync means `email list`
+usually doesn't touch IMAP at all.
+
+```bash
+mail-use daemon install      # autostart at login (macOS launchd / Linux systemd-user)
+mail-use daemon status --json
+mail-use daemon reload       # drop pooled connections after editing auth.json
+```
+
+Measured on Gmail INBOX, M2 MacBook over residential WAN:
+
+| Operation | No daemon | Daemon (`--live`) | Daemon (cached) |
+|---|---|---|---|
+| Single `email list` | 5.0s | 1.0s | 0.17s |
+| `email folders` | 5.0s | 0.85s | n/a |
+| 5 sequential `email list` | 25s | 5.3s | **0.83s** |
+| 3 parallel `email show` | ~15s | 2.7s | **0.88s** |
+
+Set `MAILBOX_NO_DAEMON=1` to skip the daemon probe entirely.
 
 ## AI usage guide
 

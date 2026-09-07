@@ -1,11 +1,43 @@
-# mail-use CLI
+# mail-use
 
-以 CLI 为核心的多邮箱（IMAP/SMTP）管理工具，支持本地同步缓存（SQLite）。
+给 AI agent 用的邮箱命令行。一个命令管 Gmail、QQ、163、Outlook 和任意 IMAP/SMTP 账号，
+输出全是 JSON；会改动邮箱的命令默认只出预览，不加 `--confirm` 什么都不动。
 
-主入口：`mail-use` CLI（Node.js 实现），按平台分发预编译二进制，装完即用，不需要 Python。
+```bash
+mail-use code --json          # 最新的验证码，一趟实时拉取
+mail-use email recent --format compact --json
+mail-use email delete --from newsletter@shop.com --confirm --json
+```
+
+属于 [`*-use` 家族](#-use-家族)，这些工具各自把 agent 的手伸到一个真实的东西上。
+
+### 为什么不自己写段 IMAP 脚本
+
+- **输出是稳定的 JSON 契约，不是给人读的文本。** 每个响应都带 `success`，失败带
+  `error_code`，取值来自固定的一组（`auth_failed`、`folder_not_found`、`imap_error` 等）。
+  契约写在 [`docs/CLI_JSON_CONTRACT.md`](docs/CLI_JSON_CONTRACT.md)。
+- **它会告诉你什么时候可能不准。** 走缓存的读取会报 `from_cache`、`cache_age_seconds`、
+  `cache_stale`；快照旧到说明同步已经停了，它就拒绝拿这份数据回答，改走实时 IMAP。
+  空收件箱不会被当成"确实没新邮件"。
+- **删和发要你点头。** `delete` / `mark` / `move` / `send` 先返回预览，按账号和文件夹分组，
+  附样本主题，加 `--confirm` 才动手。`--all-folders` 默认跳过已发送、草稿、垃圾邮件、废纸篓。
+- **为 token 预算做过取舍。** `--format compact` 只留十个值得扫的字段，20 封邮件从
+  8846 字节降到 6189。`--with-preview` 让列表一趟带回正文片段。批量 `show` 复用一条 IMAP 连接。
+- **快到可以放进循环里调。** 常驻 daemon 池化 IMAP 连接，后台同步到本地 SQLite，
+  连续五次 `email list` 从 25 秒降到 0.83 秒。
+- **也能走 MCP。** `mail-use mcp config --json` 打印可直接粘贴的配置，server 暴露 16 个工具，
+  dry-run 的默认行为一致。
 
 > 本项目原名 **Mailbox**，现改名 **mail-use**。命令换成 `mail-use`，旧的 `mailbox` 仍然可用；
 > `~/.config/mailbox` 下的账号配置和缓存数据库不动。
+
+## 支持的邮箱
+
+163 / 126、QQ、Gmail、Outlook / Hotmail，以及任意自建 IMAP+SMTP。
+
+搜索在各家的行为不一样，CLI 会照实说明：Gmail 走 `X-GM-RAW`，正文由服务端搜；
+QQ、163、Outlook 的 IMAP TEXT 搜索是坏的，`--query` 只能退化成匹配主题和发件人。
+在这几家用 `--from` / `--subject` 结果才可预期。
 
 ## 安装
 
@@ -65,6 +97,9 @@ cp examples/accounts.example.json ~/.config/mailbox/auth.json
 ## 常用命令
 
 ```bash
+# 全部账号里最新的验证码，一趟实时拉取
+mail-use code --json
+
 # 交互式
 mail-use
 
@@ -110,6 +145,28 @@ mail-use account test-connection --json
 | [computer-use](https://github.com/leeguooooo/computer-use) | macOS 桌面本身 |
 | [pixcake-use](https://github.com/leeguooooo/pixcake-use) | 只读探查 PixCake：快照 / diff / SQLite 检查 |
 
+
+## 常驻 daemon（CLI 调用快 5-30 倍）
+
+不开 daemon 时，每次调用都要花 1-3 秒在 TCP+TLS+IMAP LOGIN 上。开了之后调用复用连接池，
+后台还会同步到本地 SQLite，`email list` 通常压根不碰 IMAP。
+
+```bash
+mail-use daemon install      # 开机自启（macOS launchd / Linux systemd-user）
+mail-use daemon status --json
+mail-use daemon reload       # 改完 auth.json 后丢弃连接池
+```
+
+实测环境：Gmail 收件箱，M2 MacBook，家用宽带。
+
+| 操作 | 无 daemon | daemon（`--live`） | daemon（走缓存） |
+|---|---|---|---|
+| 单次 `email list` | 5.0s | 1.0s | 0.17s |
+| `email folders` | 5.0s | 0.85s | n/a |
+| 连续 5 次 `email list` | 25s | 5.3s | **0.83s** |
+| 并发 3 次 `email show` | ~15s | 2.7s | **0.88s** |
+
+设 `MAILBOX_NO_DAEMON=1` 可以完全跳过 daemon 探测。
 
 ## AI 集成说明
 
