@@ -151,6 +151,9 @@ mail-use account test-connection --json
 不开 daemon 时，每次调用都要花 1-3 秒在 TCP+TLS+IMAP LOGIN 上。开了之后调用复用连接池，
 后台还会同步到本地 SQLite，`email list` 通常压根不碰 IMAP。
 
+`curl … install.sh | sh` 在已经配好账号时会自动装（设 `MAIL_USE_NO_DAEMON=1` 可跳过）。
+其他情况手动装：
+
 ```bash
 mail-use daemon install      # 开机自启（macOS launchd / Linux systemd-user）
 mail-use daemon status --json
@@ -166,7 +169,26 @@ mail-use daemon reload       # 改完 auth.json 后丢弃连接池
 | 连续 5 次 `email list` | 25s | 5.3s | **0.83s** |
 | 并发 3 次 `email show` | ~15s | 2.7s | **0.88s** |
 
-设 `MAILBOX_NO_DAEMON=1` 可以完全跳过 daemon 探测。
+### 资源占用（一台机器上跑很多 agent session）
+
+daemon 是**每个用户一个进程**，所有 agent session 通过 Unix socket 共用它，所以
+session 变多不会让 IMAP 连接变多。macOS 上连着 3 个账号时的实测空闲值：
+
+| | |
+|---|---|
+| 空闲 CPU | 约 0.15% |
+| 空闲 RSS | 3-15 MB |
+| 连接数 | 每账号最多 3 条（`MAILBOX_POOL_MAX`），空闲 10 分钟后回收到 1 条 |
+| 12 个并发调用 | 1.6 秒跑完，连接池每账号仍只用 1 条 |
+
+默认值不合适时可以调：
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `MAILBOX_POOL_MAX` | `3` | 每账号并发 IMAP 连接上限 |
+| `MAILBOX_POOL_IDLE_MS` | `600000` | 空闲多久回收连接（`0` 关闭回收） |
+| `MAILBOX_POOL_KEEP_WARM` | `1` | 回收时每账号保留几条热连接 |
+| `MAILBOX_NO_DAEMON` | 未设置 | 设为 `1` 让 CLI 完全跳过 daemon |
 
 ## AI 集成说明
 

@@ -163,6 +163,9 @@ Each one-shot invocation otherwise spends 1-3s on TCP+TLS+IMAP LOGIN. With the d
 running, calls reuse pooled connections and a background SQLite sync means `email list`
 usually doesn't touch IMAP at all.
 
+The `curl … install.sh | sh` installer sets this up for you when accounts are already
+configured (`MAIL_USE_NO_DAEMON=1` opts out). Otherwise:
+
 ```bash
 mail-use daemon install      # autostart at login (macOS launchd / Linux systemd-user)
 mail-use daemon status --json
@@ -178,7 +181,27 @@ Measured on Gmail INBOX, M2 MacBook over residential WAN:
 | 5 sequential `email list` | 25s | 5.3s | **0.83s** |
 | 3 parallel `email show` | ~15s | 2.7s | **0.88s** |
 
-Set `MAILBOX_NO_DAEMON=1` to skip the daemon probe entirely.
+### Resource footprint (many agent sessions on one machine)
+
+The daemon is **one process per user**, shared by every agent session through a Unix
+socket — so more sessions do not mean more IMAP connections. Measured idle on macOS
+with 3 accounts connected:
+
+| | |
+|---|---|
+| Idle CPU | ~0.15% |
+| Idle RSS | 3-15 MB |
+| Connections | max 3 per account (`MAILBOX_POOL_MAX`), reaped back to 1 after 10 min idle |
+| 12 concurrent calls | 1.6s wall clock, pool stayed at 1 connection per account |
+
+Knobs, if the defaults do not suit you:
+
+| Env | Default | Effect |
+|---|---|---|
+| `MAILBOX_POOL_MAX` | `3` | Max concurrent IMAP connections per account |
+| `MAILBOX_POOL_IDLE_MS` | `600000` | Close connections idle this long (`0` disables reaping) |
+| `MAILBOX_POOL_KEEP_WARM` | `1` | Connections per account kept warm through reaping |
+| `MAILBOX_NO_DAEMON` | unset | `1` makes the CLI skip the daemon entirely |
 
 ## AI usage guide
 

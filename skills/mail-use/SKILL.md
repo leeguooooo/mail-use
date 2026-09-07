@@ -278,6 +278,15 @@ mail-use daemon reload       # drop pooled connections after editing auth.json
 mail-use daemon stop
 ```
 
+The installer sets the daemon up automatically when accounts are already configured, so
+on a machine that has been through `curl … install.sh | sh` it is usually already running.
+Check with `mail-use daemon status --json`; install with `mail-use daemon install`.
+
+One process per user, shared by every session over a Unix socket — more agent sessions do
+not mean more IMAP connections. Idle cost measured on macOS with 3 accounts: ~0.15% CPU,
+3-15 MB RSS. Connections are capped at 3 per account (`MAILBOX_POOL_MAX`) and reaped back
+to 1 after 10 minutes idle (`MAILBOX_POOL_IDLE_MS`).
+
 Set `MAILBOX_NO_DAEMON=1` to skip the daemon probe entirely.
 
 Measured (Gmail INBOX, M2 MacBook over residential WAN):

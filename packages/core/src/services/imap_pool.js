@@ -12,6 +12,17 @@ const KEEPALIVE_MS = 25 * 60 * 1000; // 25 minutes
 const CONNECT_TIMEOUT_MS = 30 * 1000;
 const MAX_CLIENTS_PER_ACCOUNT = Math.max(1, Number(process.env.MAILBOX_POOL_MAX || 3));
 
+// The pool used to only ever grow: one burst of concurrent agent calls would
+// take every account to MAX_CLIENTS_PER_ACCOUNT and hold those sockets (plus a
+// 25-minute NOOP timer each) for the life of the daemon, long after the burst.
+// With several accounts and several agent sessions that is a lot of idle TLS
+// state on a laptop for no benefit. Reap connections that have gone quiet, but
+// always keep one per account warm — skipping the 1-3s TCP+TLS+LOGIN on the
+// next call is the entire reason the daemon exists.
+const POOL_IDLE_MS = Math.max(0, Number(process.env.MAILBOX_POOL_IDLE_MS || 10 * 60 * 1000));
+const POOL_KEEP_WARM = Math.max(0, Number(process.env.MAILBOX_POOL_KEEP_WARM || 1));
+const REAP_SWEEP_MS = 60 * 1000;
+
 function _allowInsecureTls() {
   return String(process.env.MAILBOX_ALLOW_INSECURE_TLS || "").trim() === "1";
 }
@@ -133,6 +144,30 @@ class AccountPool {
     }
   }
 
+  // Close connections idle longer than idleMs, never dropping below keepWarm
+  // live entries. In-use entries are untouchable. Returns how many were closed.
+  reapIdle(idleMs, keepWarm) {
+    if (!(idleMs > 0)) return 0;
+    const now = Date.now();
+    const live = this.entries.filter((e) => e.client && e.client.usable);
+    // Oldest-idle first, so the warm one we keep is the most recently used.
+    const idle = live
+      .filter((e) => !e.inUse && now - (e.lastUsed || 0) >= idleMs)
+      .sort((a, b) => (a.lastUsed || 0) - (b.lastUsed || 0));
+    const droppable = Math.max(0, live.length - keepWarm);
+    const victims = idle.slice(0, droppable);
+    for (const e of victims) {
+      clearInterval(e.keepalive);
+      const c = e.client;
+      e.client = null;
+      const idx = this.entries.indexOf(e);
+      if (idx >= 0) this.entries.splice(idx, 1);
+      // Fire-and-forget: a failed logout on an already-dead socket is fine.
+      try { if (c) Promise.resolve(c.logout()).catch(() => {}); } catch { /* ignore */ }
+    }
+    return victims.length;
+  }
+
   stats() {
     return {
       account_id: this.account.id,
@@ -149,9 +184,23 @@ class AccountPool {
 }
 
 class ImapPool {
-  constructor() {
+  constructor({ idleMs = POOL_IDLE_MS, keepWarm = POOL_KEEP_WARM } = {}) {
     this._pools = new Map(); // accountId → AccountPool
     this.maxPerAccount = MAX_CLIENTS_PER_ACCOUNT;
+    this.idleMs = idleMs;
+    this.keepWarm = keepWarm;
+    this._sweep = null;
+    if (this.idleMs > 0) {
+      this._sweep = setInterval(() => this.reapIdle(), REAP_SWEEP_MS);
+      // unref: the reaper must never be the reason the process stays alive.
+      if (typeof this._sweep.unref === "function") this._sweep.unref();
+    }
+  }
+
+  reapIdle() {
+    let closed = 0;
+    for (const p of this._pools.values()) closed += p.reapIdle(this.idleMs, this.keepWarm);
+    return closed;
   }
 
   _poolFor(account) {
@@ -190,6 +239,10 @@ class ImapPool {
   }
 
   async closeAll() {
+    if (this._sweep) {
+      clearInterval(this._sweep);
+      this._sweep = null;
+    }
     for (const p of this._pools.values()) {
       await p.closeAll();
     }

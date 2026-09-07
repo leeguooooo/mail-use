@@ -7,6 +7,7 @@
 # Env overrides:
 #   MAIL_USE_VERSION=v2.11.2   install a specific tag (default: latest release)
 #   MAIL_USE_INSTALL_DIR=...   install dir (default: ~/.local/bin)
+#   MAIL_USE_NO_DAEMON=1       skip setting up the background daemon
 #   (the older MAILBOX_* names still work)
 set -eu
 
@@ -89,6 +90,36 @@ ln -sf "$INSTALL_DIR/mail-use" "$INSTALL_DIR/mailbox" 2>/dev/null || true
 printf 'mail-use-install: installed to %s/mail-use (legacy alias: %s/mailbox)\n' "$INSTALL_DIR" "$INSTALL_DIR"
 "$INSTALL_DIR/mail-use" --version >/dev/null 2>&1 && \
   printf 'mail-use-install: version %s\n' "$("$INSTALL_DIR/mail-use" --version 2>/dev/null)" || true
+
+# --- daemon ------------------------------------------------------------------
+# Without the daemon every call pays 1-3s of TCP+TLS+IMAP LOGIN, which is the
+# difference between 25s and 0.83s over five calls — and with several agent
+# sessions on one machine that cost is paid over and over. The daemon is one
+# shared process per user (~0.15% CPU and a few MB when idle), so it lowers the
+# total footprint rather than adding to it.
+#
+# Only set it up when accounts are already configured: a daemon with no auth.json
+# has nothing to connect to, and installing a login item for a tool the user has
+# not finished setting up is presumptuous.
+setup_daemon() {
+  [ -z "${MAIL_USE_NO_DAEMON:-}" ] || return 0
+
+  cfg_dir="${MAILBOX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mailbox}"
+  if [ ! -f "$cfg_dir/auth.json" ]; then
+    printf 'mail-use-install: no accounts configured yet — skipping daemon setup.\n'
+    printf '  after adding %s/auth.json, run:  mail-use daemon install\n' "$cfg_dir"
+    return 0
+  fi
+
+  printf 'mail-use-install: setting up the background daemon (5-30x faster calls)...\n'
+  if "$INSTALL_DIR/mail-use" daemon install >/dev/null 2>&1; then
+    printf 'mail-use-install: daemon installed (mail-use daemon status --json to check)\n'
+  else
+    printf 'mail-use-install: daemon setup failed — the CLI still works, just slower.\n'
+    printf '  retry with:  mail-use daemon install\n'
+  fi
+}
+setup_daemon
 
 # --- PATH hint ---------------------------------------------------------------
 case ":$PATH:" in
