@@ -128,7 +128,7 @@ mail-use email folders --account-id <id> --json
 ```
 
 The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` opens the
-right mail-use with no `--folder` — even for results from `search --folder all`. The legacy
+right mailbox with no `--folder` — even for results from `search --folder all`. The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
 
 ### Mutate (all dry-run by default)
@@ -275,5 +275,4 @@ Measured (Gmail INBOX, M2 MacBook over residential WAN):
 
 - Install this skill: `npx skills add leeguooooo/mail-use --skill mail-use` (add `-g` for user scope)
 - Repo: https://github.com/leeguooooo/mail-use
-- npm: https://www.npmjs.com/package/@leeguoo/mail-use
 - JSON contract docs: `docs/CLI_JSON_CONTRACT.md`
