@@ -19,5 +19,10 @@
     "lint": "pnpm -r --if-present lint",
     "format": "pnpm -r --if-present format",
     "release": "semantic-release"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "4.1.3"
+    }
   }
 }
