@@ -29,6 +29,31 @@ function _cacheFreshSeconds() {
   return Number.isFinite(n) && n >= 0 ? n : CACHE_FRESH_SECONDS_DEFAULT;
 }
 
+// Second, much larger threshold: the point where the cache stops being a
+// slightly-behind snapshot and becomes evidence that nothing is syncing at all
+// (daemon never installed, stopped, or broken). The freshness window above is
+// deliberately short and only self-heals a *thin* result — a full page of rows
+// is trusted, which is right when the snapshot is minutes old and wrong when it
+// is months old. Without this, `email recent` answers "your latest mail" with
+// whatever was in the box the day sync died, success:true, no warning.
+// Beyond this age we always go live, however many rows the cache can produce.
+// Set to 0 to disable.
+const CACHE_ABANDONED_SECONDS_DEFAULT = 24 * 60 * 60; // 1 day
+function _cacheAbandonedSeconds() {
+  const raw = process.env.MAILBOX_CACHE_STALE_SECONDS;
+  if (raw == null || String(raw).trim() === "") return CACHE_ABANDONED_SECONDS_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : CACHE_ABANDONED_SECONDS_DEFAULT;
+}
+
+function _humanAge(sec) {
+  if (sec == null) return "unknown";
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 90 * 60) return `${Math.round(sec / 60)}m`;
+  if (sec < 48 * 3600) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
+
 // Hard caps to defend against hostile mail. Override via env if needed.
 const MAX_MESSAGE_BYTES = Number(process.env.MAILBOX_MAX_MESSAGE_BYTES || 50 * 1024 * 1024); // 50 MiB
 const MAX_ATTACHMENT_BYTES = Number(process.env.MAILBOX_MAX_ATTACHMENT_BYTES || 25 * 1024 * 1024); // 25 MiB per file
@@ -355,37 +380,50 @@ async function listEmails({
         const ageSec = cache.cache_age_seconds; // null = unknown freshness
         const freshSeconds = _cacheFreshSeconds();
         const stale = freshSeconds > 0 && (ageSec == null || ageSec > freshSeconds);
+        const abandonedSeconds = _cacheAbandonedSeconds();
+        // MAILBOX_CACHE_FRESH_SECONDS=0 is the documented "trust the cache, never
+        // auto-fallback" escape hatch, so it disables this rule too.
+        // Unknown age can't prove abandonment; the thin+stale rule already
+        // covers it, so don't force every call live on a null age.
+        const abandoned =
+          freshSeconds > 0 && abandonedSeconds > 0 && ageSec != null && ageSec > abandonedSeconds;
 
-        // Self-heal: a thin AND stale cache read is exactly the silent-miss
-        // case (e.g. asking for the latest mail seconds after it arrived, before
-        // the next sync). Don't return the cache — fall through to live IMAP so
-        // freshly-arrived mail is picked up. A thin-but-fresh read is trusted
-        // (the folder genuinely has that few), as is a full read.
-        if (thin && stale) {
+        // Self-heal in two cases:
+        //  - thin AND stale: the silent-miss case (asking for the latest mail
+        //    seconds after it arrived, before the next sync). A thin-but-fresh
+        //    read is trusted — the folder genuinely has that few.
+        //  - abandoned: the snapshot is so old that nothing is syncing. Row
+        //    count says nothing here; a full page of months-old mail is exactly
+        //    the answer we must not give.
+        if ((thin && stale) || abandoned) {
           if (process.env.MAILBOX_DEBUG) {
-            const ageStr = ageSec == null ? "unknown" : `${ageSec}s`;
-            process.stderr.write(
-              `mail-use: cache thin (${returned}/${lim}) and stale (age ${ageStr} > ${freshSeconds}s) — refetching live\n`
-            );
+            const why = abandoned
+              ? `abandoned (age ${_humanAge(ageSec)} > ${abandonedSeconds}s)`
+              : `thin (${returned}/${lim}) and stale (age ${_humanAge(ageSec)} > ${freshSeconds}s)`;
+            process.stderr.write(`mail-use: cache ${why} — refetching live\n`);
           }
           // fall through to the live IMAP path below
         } else {
           // Add multi-account metadata similar to Python contract.
           const all = accounts.getAllAccountsResolved();
           const accounts_count = resolvedId ? 1 : (all.success ? (all.accounts || []).length : 0);
-          // Annotate thin cached results with a machine-readable freshness hint
-          // so a caller that gets 0 (or few) rows can tell it was served from a
-          // cache snapshot and knows the lever to force a live read. Only added
-          // when thin — a full result needs no nudge.
-          const hint = thin
-            ? `served from cache (age ${ageSec == null ? "unknown" : `${ageSec}s`}); pass --live (or use_cache=false) to force a live IMAP fetch`
-            : undefined;
+          // Annotate stale cache reads with a machine-readable flag plus a hint
+          // naming the lever. Previously only *thin* results got the nudge, so a
+          // full page served from a snapshot older than the freshness window
+          // looked indistinguishable from a live read.
+          // Two independent reasons to nudge: the page is short (something may
+          // be missing) or the snapshot is behind (what's here may be old).
+          const hint =
+            thin || stale
+              ? `served from cache (age ${_humanAge(ageSec)}${thin ? `, ${returned}/${lim} rows` : ""}); pass --live (or use_cache=false) to force a live IMAP fetch`
+              : undefined;
           return {
             ...cache,
             total_emails: cache.total_in_folder,
             total_unread: cache.unread_count,
             accounts_count,
             accounts_info: [],
+            cache_stale: Boolean(stale),
             ...(hint ? { hint } : {}),
             ...(dateWarnings.length ? { warnings: dateWarnings } : {}),
           };

@@ -45,6 +45,16 @@ async function seedCache({ lastSyncIso, rows = [] }) {
   return dbPath;
 }
 
+function fullPage(prefix = "m") {
+  return Array.from({ length: 8 }, (_v, i) => ({
+    uid: String(1000 + i),
+    subject: `${prefix}${i}`,
+    from: "a@b.com",
+    date: `2026-02-01 0${i}:00:00`,
+    unread: false,
+  }));
+}
+
 describe("cache freshness signals + self-heal", () => {
   beforeEach(() => {
     const root = path.join(import.meta.dirname, ".tmp", "cache_freshness");
@@ -52,9 +62,11 @@ describe("cache freshness signals + self-heal", () => {
     setTestEnv(root);
     resetMockState();
     delete process.env.MAILBOX_CACHE_FRESH_SECONDS;
+    delete process.env.MAILBOX_CACHE_STALE_SECONDS;
   });
   afterEach(() => {
     delete process.env.MAILBOX_CACHE_FRESH_SECONDS;
+    delete process.env.MAILBOX_CACHE_STALE_SECONDS;
   });
 
   it("listEmailsFromCache always carries from_cache + cache_age_seconds, even when empty", async () => {
@@ -110,19 +122,52 @@ describe("cache freshness signals + self-heal", () => {
     expect(r.emails.some((e) => e.subject === "STALE CACHED")).toBe(true);
   });
 
-  it("a full (not thin) cache result needs no hint", async () => {
-    const rows = Array.from({ length: 8 }, (_v, i) => ({
-      uid: String(1000 + i),
-      subject: `m${i}`,
-      from: "a@b.com",
-      date: `2026-02-01 0${i}:00:00`,
-      unread: false,
-    }));
-    await seedCache({ lastSyncIso: "2020-01-01T00:00:00.000Z", rows });
+  it("a full but fresh cache result is trusted and needs no hint", async () => {
+    await seedCache({ lastSyncIso: new Date().toISOString(), rows: fullPage() });
     const r = await email.listEmails({ account_id: "mock_acc", folder: "INBOX", limit: 8, use_cache: true });
-    // Full result (8 >= limit 8) → trusted, no hint even though stale.
     expect(r.from_cache).toBe(true);
     expect(r.emails.length).toBe(8);
+    expect(r.cache_stale).toBe(false);
     expect(r.hint).toBeUndefined();
+  });
+
+  it("a full but mildly stale cache result is still served, flagged cache_stale + hint", async () => {
+    // Older than the freshness window but well inside the abandoned threshold:
+    // the daemon is syncing, we're just a few minutes behind. Serving the cache
+    // is right — silently pretending it is live is not.
+    process.env.MAILBOX_CACHE_FRESH_SECONDS = "120";
+    process.env.MAILBOX_CACHE_STALE_SECONDS = "86400";
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await seedCache({ lastSyncIso: tenMinAgo, rows: fullPage() });
+    const r = await email.listEmails({ account_id: "mock_acc", folder: "INBOX", limit: 8, use_cache: true });
+    expect(r.from_cache).toBe(true);
+    expect(r.emails.length).toBe(8);
+    expect(r.cache_stale).toBe(true);
+    expect(r.hint).toMatch(/served from cache/);
+  });
+
+  it("a full but ABANDONED cache self-heals to live — a full page of months-old mail is not an answer", async () => {
+    // The regression this guards: with the daemon dead for months, `email recent`
+    // returned a full page of stale rows with success:true and no warning, so
+    // "your latest mail" was whatever arrived the day sync stopped.
+    await seedCache({
+      lastSyncIso: "2020-01-01T00:00:00.000Z",
+      rows: fullPage("ABANDONED CACHED"),
+    });
+    const r = await email.listEmails({ account_id: "mock_acc", folder: "INBOX", limit: 8, use_cache: true });
+    expect(r.from_cache).toBe(false); // went live despite a full page being available
+    expect(r.emails.some((e) => String(e.subject).includes("ABANDONED CACHED"))).toBe(false);
+    expect(r.emails.length).toBeGreaterThan(0);
+  });
+
+  it("MAILBOX_CACHE_STALE_SECONDS=0 disables the abandoned-cache fallback", async () => {
+    process.env.MAILBOX_CACHE_STALE_SECONDS = "0";
+    await seedCache({
+      lastSyncIso: "2020-01-01T00:00:00.000Z",
+      rows: fullPage("ABANDONED CACHED"),
+    });
+    const r = await email.listEmails({ account_id: "mock_acc", folder: "INBOX", limit: 8, use_cache: true });
+    expect(r.from_cache).toBe(true);
+    expect(r.emails.some((e) => String(e.subject).includes("ABANDONED CACHED"))).toBe(true);
   });
 });
