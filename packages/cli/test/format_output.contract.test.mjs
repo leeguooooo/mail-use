@@ -124,3 +124,32 @@ describe("WP-C: --format compact / jsonl", () => {
     expect(payload).not.toHaveProperty("html_body");
   });
 });
+
+// Regression: cache_stale was added to the cached list/recent result but not to
+// COMPACT_TOP_LEVEL_KEEP, so `--format compact` — the shape agents actually use —
+// silently dropped it. Every freshness signal has to survive the projection or it
+// is not a signal at all.
+describe("cache freshness signals survive --format compact", () => {
+  it("keeps from_cache / cache_age_seconds / cache_stale / hint", async () => {
+    const contract = (await import("node:module")).createRequire(import.meta.url)(
+      "@mail-use/shared/src/contract.js"
+    );
+    const projected = contract.compactResult({
+      success: true,
+      from_cache: true,
+      cache_age_seconds: 42,
+      cache_stale: true,
+      unread_as_of: "2026-09-08T00:00:00.000Z",
+      hint: "served from cache (age 42s); pass --live ...",
+      accounts_info: [{ noise: true }],
+      emails: [{ id: 1, account_id: "a", folder: "INBOX", subject: "s", from: "f", date: "d" }],
+    });
+    expect(projected.from_cache).toBe(true);
+    expect(projected.cache_age_seconds).toBe(42);
+    expect(projected.cache_stale).toBe(true);
+    expect(projected.unread_as_of).toBeTruthy();
+    expect(projected.hint).toMatch(/cache/);
+    // ...while the noise is still dropped.
+    expect(projected.accounts_info).toBeUndefined();
+  });
+});

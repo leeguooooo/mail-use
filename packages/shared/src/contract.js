@@ -117,6 +117,7 @@ const COMPACT_TOP_LEVEL_KEEP = new Set([
   "from_cache",
   "unread_as_of",
   "cache_age_seconds",
+  "cache_stale",
   "hint",
 ]);
 
