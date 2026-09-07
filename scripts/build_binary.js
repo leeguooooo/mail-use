@@ -5,16 +5,6 @@ const fs = require("fs");
 const path = require("path");
 const { runMcpSmokeTest } = require("./mcp_smoke_test");
 
-function platformPackage() {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  if (platform === "darwin" && arch === "arm64") return "mail-use-darwin-arm64";
-  if (platform === "darwin" && arch === "x64") return "mail-use-darwin-x64";
-  if (platform === "linux" && arch === "x64") return "mail-use-linux-x64-gnu";
-  return null;
-}
-
 function pkgTarget() {
   const platform = process.platform;
   const arch = process.arch;
@@ -98,9 +88,8 @@ function ensureBinary(entry, target, outBin, root) {
 }
 
 function main() {
-  const pkgName = platformPackage();
   const target = pkgTarget();
-  if (!pkgName || !target) {
+  if (!target) {
     console.error(`Unsupported platform for binary build: ${process.platform} ${process.arch}`);
     process.exit(1);
   }
@@ -122,13 +111,9 @@ function main() {
   const smoke = runMcpSmokeTest(outBin);
   console.log(`MCP smoke test passed: ${smoke.toolCount} tools`);
 
-  const platformPkgDir = path.join(__dirname, "..", "mail-use-npm", "packages", pkgName);
-  const binDir = path.join(platformPkgDir, "bin");
-  fs.mkdirSync(binDir, { recursive: true });
-  const dest = path.join(binDir, "mail-use");
-  fs.copyFileSync(outBin, dest);
-  fs.chmodSync(dest, 0o755);
-  console.log(`Copied binary to: ${dest}`);
+  // 发布走 GitHub Releases：CI 把 dist/mail-use 打成 tar.gz 挂到 Release 上，
+  // install.sh 直接拉。没有 npm 这一环，也就没有 NPM_TOKEN 和 2FA。
+  console.log(`Binary ready: ${outBin}`);
 }
 
 main();

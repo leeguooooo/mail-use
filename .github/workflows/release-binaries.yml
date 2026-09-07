@@ -42,10 +42,8 @@ jobs:
         run: pnpm install
 
       # Bake the real version into the binary via packages/cli/src/_version.js.
-      # NOTE: do NOT use scripts/set_release_version.js here — it rewrites the
-      # mail-use-npm/packages/* versions and breaks `pnpm install --frozen-lockfile`
-      # inside build:binary. _version.js is a plain JS module (not a package.json),
-      # so stamping it has no lockfile impact and pkg bundles it statically.
+      # It is a plain JS module (not a package.json), so stamping it has no
+      # lockfile impact and pkg bundles it statically.
       - name: Bake CLI version (for `mail-use --version`)
         shell: bash
         run: |

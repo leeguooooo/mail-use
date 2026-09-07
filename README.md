@@ -18,7 +18,7 @@ platform binaries — no Python, no Node required for end users.
 
 ## Install
 
-### From GitHub Releases (recommended — no npm, no Node)
+### One line, no npm, no Node
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
@@ -33,14 +33,9 @@ change the dir with `MAIL_USE_INSTALL_DIR=...`.
 The installer also drops a `mailbox` symlink next to it, so scripts written against the old
 name keep working.
 
-### npm
-
-```bash
-npm install -g @leeguoo/mail-use
-```
-
-Same binaries, one channel behind the GitHub Release. The `curl` installer above is the
-fastest path and needs no Node.
+There is no npm package. Distribution is GitHub Release binaries only — that keeps
+releases free of `NPM_TOKEN` and 2FA prompts, and keeps install free of a Node toolchain.
+The pre-rename `@leeguoo/mailbox-cli` packages on npm are frozen and no longer updated.
 
 ### As an AI Skill (Claude Code / Cursor / etc.)
 
@@ -67,7 +62,7 @@ mail-use mcp config --json   # prints a paste-ready mcpServers entry
 pnpm install
 pnpm test
 
-# build a local platform binary into mail-use-npm/packages/<platform>/bin/mail-use
+# build a local platform binary into dist/mail-use
 pnpm build:binary
 ```
 

@@ -61,7 +61,6 @@ To tell whether a command exists, probe `mail-use <cmd> --help --json` and check
 ```bash
 # 1. Install the CLI from GitHub Releases (no npm/Node needed; prebuilt binary):
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
-#    (or `npm install -g @leeguoo/mail-use` — same binary, usually one release behind)
 
 # 2. Configure accounts (edit credentials):
 mkdir -p ~/.config/mailbox

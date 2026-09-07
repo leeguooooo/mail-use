@@ -1,107 +1,70 @@
-# Releasing (mail-use + mail-use)
+# Releasing
 
-This project ships:
+This project ships exactly one artifact: a standalone `mail-use` binary attached to a
+GitHub Release. There is no npm package — publishing to npmjs.com needs an `NPM_TOKEN`
+plus account 2FA, and that friction repeatedly blocked releases here. GitHub's own
+`GITHUB_TOKEN` is enough to attach a Release asset, and `install.sh` needs no auth from
+the person installing either.
 
-1) A standalone `mail-use` binary (built from this repo)
-2) An npm package `@leeguoo/mail-use` that installs `mail-use` (binary distribution)
+The pre-rename `@leeguoo/mailbox-cli` packages still exist on npm, frozen at their last
+published version. Nothing publishes to them any more.
 
-## Automated release (recommended)
+## Automated release (the normal path)
 
-Releases are created automatically from `main` using semantic-release.
+Releases are cut from `main` by semantic-release.
 
 Requirements:
 - Conventional Commit messages (`feat:`, `fix:`, etc.)
-- Do **not** manually bump package versions in `mail-use-npm/packages/*`
-  (keep them at `0.0.0`). The CI publish job sets real versions at release
-  time via `scripts/set_release_version.js`.
-- Set repository secret `RELEASE_TOKEN` (a PAT with `repo` + `workflow` scopes)
-  so tag pushes can trigger `publish-npm` and `release-binaries`.
+- Repository secret `RELEASE_TOKEN` (a PAT with `repo` + `workflow` scopes) so the tag
+  push triggers `release-binaries`. Without it, `semantic-release.yml` falls back to
+  dispatching `release-binaries` explicitly.
 
 Flow:
 1. Merge to `main` with a `feat:` or `fix:` commit.
-2. The `semantic-release` workflow computes the next version and pushes a tag
-   like `v2.0.6`.
-3. Tag push triggers `release-binaries` and `publish-npm`.
+2. The `semantic-release` workflow computes the next version and pushes a tag like `v2.13.0`.
+3. The tag triggers `release-binaries`, which builds each target and attaches the assets.
 
 If no release-worthy commits are found, semantic-release exits without tagging.
 
 ## Manual release (fallback)
-
-## 1) Build + publish `mail-use` binaries
-
-Create a tag (only if you are not using semantic-release):
 
 ```bash
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-GitHub Actions workflow `release-binaries` will build and attach artifacts to a
-GitHub Release:
+`release-binaries` builds and attaches:
 
 - `mail-use-darwin-arm64.tar.gz`
 - `mail-use-darwin-x64.tar.gz`
 - `mail-use-linux-x64-gnu.tar.gz`
 
-Each has a matching `.sha256` file.
+Each with a matching `.sha256`. Every tarball contains a single file, `mail-use`.
 
-## 2) Publish `@leeguoo/mail-use` to npm
+The version is baked into the binary by stamping `packages/cli/src/_version.js` from the
+tag name before the build — a plain JS module, so it has no lockfile impact and `pkg`
+bundles it statically.
 
-The Node project lives under `mail-use-npm/`.
+## What the build actually does
 
-Publishing model:
+`pnpm build:binary` (`scripts/build_binary.js`):
 
-- `@leeguoo/mail-use` main package depends on platform packages:
-  - `@leeguoo/mail-use-darwin-arm64`
-  - `@leeguoo/mail-use-darwin-x64`
-  - `@leeguoo/mail-use-linux-x64-gnu`
+1. `pnpm install` + `pnpm test`.
+2. esbuild bundles the CLI to a single CJS file. This exists because `pkg` 5 does not
+   implement `exports` maps, and `@modelcontextprotocol/sdk` uses one — see #22.
+3. `pkg` turns the bundle into `dist/mail-use`. Any `Warning Cannot find module` from
+   `pkg` is treated as a hard failure.
+4. The binary is actually launched and driven through an MCP `initialize` + `tools/list`
+   round-trip. #22 shipped green CI with a binary that could not start; only a real
+   end-to-end launch catches that.
 
-Each platform package bundles a `bin/mail-use` executable.
+## Consuming a release
 
-Release pipeline (automated):
+```bash
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
+```
 
-This repository uses GitHub Actions to publish npm packages from a git tag.
-
-Required secret:
-
-- `NPM_TOKEN` (an npm access token with publish rights)
-
-Flow:
-
-1. Push a tag `vX.Y.Z`.
-2. CI builds the `mail-use` binary on each target OS.
-3. CI injects the binary into each platform package `bin/mail-use`.
-4. CI sets `package.json` versions to `X.Y.Z` (platform packages + launcher).
-5. CI publishes platform packages first, then publishes `@leeguoo/mail-use`.
-
-Workflow:
-
-- `.github/workflows/publish-npm.yml`
-
-Note: the `mail-use-npm/` directory is intended to become its own repo.
-
-### Required files in each platform package
-
-Each platform package must contain:
-
-- `bin/mail-use` (executable)
-- `index.js` exporting `binaryPath`
-
-The launcher package `@leeguoo/mail-use` resolves the correct platform package and
-executes `binaryPath`.
-
-### Artifact naming convention
-
-`release-binaries` uploads:
-
-- `mail-use-darwin-arm64.tar.gz`
-- `mail-use-darwin-x64.tar.gz`
-- `mail-use-linux-x64-gnu.tar.gz`
-
-These tarballs contain a single file: `mail-use`.
-
-The npm release pipeline should:
-
-1. Download the tarball matching the platform package.
-2. Extract `mail-use` into `packages/<platform>/bin/mail-use`.
-3. Ensure unix executable bit is set (chmod +x).
+`install.sh` resolves the platform, downloads the asset, verifies the `.sha256` when
+present, installs to `~/.local/bin/mail-use`, and drops a `mailbox` symlink beside it so
+pre-rename scripts keep working. Pin with `MAIL_USE_VERSION=vX.Y.Z`; relocate with
+`MAIL_USE_INSTALL_DIR=...`.

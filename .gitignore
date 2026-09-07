@@ -60,8 +60,6 @@ ENV/
 /clients/desktop-app/
 
 # Prebuilt mail-use binaries (generated)
-# Platform packages only (do NOT ignore the launcher JS bin).
-/mail-use-npm/packages/mail-use-*/bin/
 /dist/
 
 # Node tests temp fixtures

@@ -6,14 +6,13 @@
   - `packages/core/` IMAP/SMTP + storage + account migration
   - `packages/shared/` path resolution + JSON contract helpers
   - `packages/workflows/` digest/monitor/inbox workflows
-- `mail-use-npm/` contains the npm launcher + platform binary packages.
 - `scripts/` contains build helpers (notably `scripts/build_binary.js`).
 - `docs/` holds CLI contract + release docs; legacy Python/MCP docs remain under `docs/archive/`.
 
 ## Build, Test, and Development Commands
 - Install dependencies: `pnpm install`
 - Run tests: `pnpm test`
-- Build local pkg binary (and copy into the `mail-use-npm` platform package): `pnpm build:binary`
+- Build local pkg binary into `dist/mail-use`: `pnpm build:binary`
 - Run dev CLI: `pnpm -C packages/cli test` or `node packages/cli/bin/mail-use.js --help`
 
 ## Coding Style & Naming Conventions

@@ -9,7 +9,7 @@
 
 ## 安装
 
-### 一行 curl（推荐）
+### 一行 curl
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
@@ -20,13 +20,8 @@ mail-use --help
 （macOS arm64/x64、Linux x64），校验 sha256 后装到 `~/.local/bin`。锁版本用
 `MAIL_USE_VERSION=v2.11.2`，换目录用 `MAIL_USE_INSTALL_DIR=...`。
 
-### npm
-
-```bash
-npm install -g @leeguoo/mail-use
-```
-
-同一份二进制，通常比 GitHub Release 慢一步。
+没有 npm 包。只走 GitHub Release 二进制：发版不用 `NPM_TOKEN` 和 2FA，
+装的人也不需要 Node。改名前的 `@leeguoo/mailbox-cli` 停在旧版本，不再更新。
 
 ### 装成 AI Skill（Claude Code / Cursor 等）
 

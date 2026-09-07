@@ -27,14 +27,6 @@ importers:
         specifier: ^24.2.1
         version: 24.2.9
 
-  mail-use-npm/packages/mail-use: {}
-
-  mail-use-npm/packages/mail-use-darwin-arm64: {}
-
-  mail-use-npm/packages/mail-use-darwin-x64: {}
-
-  mail-use-npm/packages/mail-use-linux-x64-gnu: {}
-
   packages/cli:
     dependencies:
       '@mail-use/core':

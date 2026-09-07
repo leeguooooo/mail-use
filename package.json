@@ -3,8 +3,7 @@
   "private": true,
   "description": "mail-use Node CLI monorepo (workspace)",
   "workspaces": [
-    "packages/*",
-    "mail-use-npm/packages/*"
+    "packages/*"
   ],
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13.0.1",
