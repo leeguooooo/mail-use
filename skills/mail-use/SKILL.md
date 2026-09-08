@@ -41,8 +41,9 @@ These commands/flags require **mail-use ≥ 2.11.0**:
 `--format compact|jsonl`, `email recent`, `cleanup`, `--since`, `--account-unread`,
 `--text-only`, the 3-part gid (`account_id:folder:uid`), and `search --timeout`.
 
-Probe before relying on them: `mail-use --version`. Update by re-running the installer above
-(`MAIL_USE_VERSION=v2.11.2 …` to pin). On an older CLI, use these fallbacks (all available
+Probe before relying on them: `mail-use --version`. To update, prefer `mail-use upgrade`
+(`mail-use upgrade --check` reports without changing anything; `--tag vX.Y.Z` pins or rolls
+back). Re-running the installer above works too. On an older CLI, use these fallbacks (all available
 since early versions):
 
 | Newer | Fallback on < 2.11 |

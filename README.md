@@ -68,6 +68,20 @@ There is no npm package. Distribution is GitHub Release binaries only — that k
 releases free of `NPM_TOKEN` and 2FA prompts, and keeps install free of a Node toolchain.
 The pre-rename `@leeguoo/mailbox-cli` packages on npm are frozen and no longer updated.
 
+### Upgrading
+
+```bash
+mail-use upgrade --check     # is there a newer release?
+mail-use upgrade             # download, verify sha256, replace in place, restart the daemon
+mail-use upgrade --tag v3.1.0   # pin an exact release (also the way to roll back)
+```
+
+`upgrade` is never automatic and never runs on its own: a tool that silently replaces
+its own executable is a supply-chain surprise, not a convenience. It refuses to install
+a tarball whose published `.sha256` doesn't match, and refuses to run at all from a dev
+checkout (where `process.execPath` is your `node`). Re-running the `curl … install.sh | sh`
+line does the same job.
+
 ### As an AI Skill (Claude Code / Cursor / etc.)
 
 ```bash

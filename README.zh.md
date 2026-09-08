@@ -55,6 +55,18 @@ mail-use --help
 没有 npm 包。只走 GitHub Release 二进制：发版不用 `NPM_TOKEN` 和 2FA，
 装的人也不需要 Node。改名前的 `@leeguoo/mailbox-cli` 停在旧版本，不再更新。
 
+### 升级
+
+```bash
+mail-use upgrade --check        # 有没有新版本
+mail-use upgrade                # 下载、校验 sha256、原地替换、重启 daemon
+mail-use upgrade --tag v3.1.0   # 装指定版本（回滚也走这个）
+```
+
+`upgrade` 不会自动执行，也不会自己在后台跑：一个悄悄替换自身可执行文件的工具是供应链
+意外，不是便利。校验和跟发布的 `.sha256` 对不上就拒绝安装；在源码检出里直接拒绝运行
+（那里的 `process.execPath` 是你的 `node`）。重跑 `curl … install.sh | sh` 效果一样。
+
 ### 装成 AI Skill（Claude Code / Cursor 等）
 
 ```bash

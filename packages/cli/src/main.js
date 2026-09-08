@@ -1610,6 +1610,59 @@ async function main(argv) {
       process.exit(rc);
     });
 
+  // upgrade
+  program
+    .command("upgrade")
+    .description("Upgrade the installed binary from the latest GitHub Release")
+    .option("--check", "Only report whether a newer version exists; change nothing")
+    .option("--tag <vX.Y.Z>", "Install this exact release instead of the latest (also allows downgrade)")
+    .action(async (opts) => {
+      const upgrade = require("./upgrade");
+      const current = _resolveCliVersion();
+      try {
+        if (opts.check) {
+          const result = await upgrade.checkForUpdate(current);
+          const rc = contract.handleJsonOrText({
+            result,
+            asJson,
+            pretty,
+            printText: () => {
+              process.stdout.write(
+                result.update_available
+                  ? `${result.current} -> ${result.latest} available\n  run: mail-use upgrade\n`
+                  : `${result.current} is the latest\n`
+              );
+            },
+          });
+          process.exit(rc);
+        }
+        const result = await upgrade.performUpgrade({
+          currentVersion: current,
+          targetTag: opts.tag || "",
+          log: (m) => { if (!asJson) process.stderr.write(`mail-use upgrade: ${m}\n`); },
+        });
+        const rc = contract.handleJsonOrText({
+          result,
+          asJson,
+          pretty,
+          printText: () => {
+            if (result.upgraded) process.stdout.write(`upgraded ${result.from} -> ${result.to} (daemon: ${result.daemon})\n`);
+            else process.stdout.write(`${result.message || "nothing to do"}\n`);
+          },
+        });
+        process.exit(rc);
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        const rc = contract.handleJsonOrText({
+          result: { success: false, error: msg, error_code: contract.inferErrorCode(msg) },
+          asJson,
+          pretty,
+          printText: () => process.stderr.write(`upgrade failed: ${msg}\n`),
+        });
+        process.exit(rc);
+      }
+    });
+
   // digest
   program
     .command("cleanup")
