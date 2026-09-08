@@ -3,6 +3,22 @@ const path = require("path");
 
 const { paths } = require("@mail-use/shared");
 
+const { _dateOnly, _isoDate, _expandRelativeDate, _parseDateInput } = require("./email/dates");
+const { _deadlineExceeded, _raceTimeout } = require("./email/deadline");
+const {
+  _normalizeFolder, _gid, _listMailboxes, _selectableFoldersFor,
+  _uidsSortedDesc, _compareDatesDesc,
+} = require("./email/internals");
+const { _trashFolderCandidates, _findTrashFolder, _uidExistsInFolder } = require("./email/trash");
+const {
+  _outgoingAttachments, _outgoingAttachmentPreview,
+  _splitAddressList, _addressEmail, _dedupeAddresses, _buildReferences,
+} = require("./email/addresses");
+const {
+  _stripUrls, _htmlToText, _composeBody,
+  _parseListUnsubscribeHeader, _formatListUnsubscribeFromListHeader, _extractListUnsubscribe,
+} = require("./email/body");
+
 const accounts = require("./accounts");
 const { withImapClient } = require("./imap");
 const { sendMail } = require("./smtp");
@@ -67,142 +83,6 @@ async function _safeParse(source) {
   return simpleParser(source, {
     maxHtmlLengthToParse: MAX_MESSAGE_BYTES,
   });
-}
-
-function _normalizeFolder(folder) {
-  const f = String(folder || "").trim();
-  if (!f) return "INBOX";
-  if (f.toLowerCase() === "all") return "INBOX";
-  return f;
-}
-
-// Self-describing global id: account_id:folder:uid. The folder segment lets
-// `show` open the right mailbox without the caller passing --folder. Parsing is
-// backward-compatible with the legacy 2-part account_id:uid form.
-function _gid(accountId, folder, uid) {
-  return `${accountId}:${folder || "INBOX"}:${uid}`;
-}
-
-// imapflow's client.list() returns Promise<Array> in current versions but has
-// historically been documented as async-iterable. Tolerate both shapes.
-async function _listMailboxes(client) {
-  if (typeof client.list !== "function") return [];
-  const r = client.list();
-  if (r && typeof r.then === "function") {
-    const arr = await r;
-    return Array.isArray(arr) ? arr : [];
-  }
-  if (r && typeof r[Symbol.asyncIterator] === "function") {
-    const out = [];
-    for await (const mb of r) out.push(mb);
-    return out;
-  }
-  return Array.isArray(r) ? r : [];
-}
-
-// Pick selectable folder paths to scan when the caller asks for --folder all.
-// Skip \Noselect containers (e.g. "[Gmail]") and Gmail's "All Mail" alias to
-// avoid double-counting messages that already appear in INBOX/Spam/etc.
-function _selectableFoldersFor(mailboxes) {
-  const out = [];
-  for (const mb of mailboxes || []) {
-    const path = mb.path || mb.name || "";
-    if (!path) continue;
-    const flags = Array.isArray(mb.flags) ? mb.flags : [];
-    const flagSet = new Set(flags.map((f) => String(f)));
-    if (flagSet.has("\\Noselect") || flagSet.has("\\NonExistent")) continue;
-    const special = String(mb.specialUse || "");
-    if (special === "\\All") continue; // Gmail's "All Mail" duplicates everything else.
-    out.push(path);
-  }
-  return out;
-}
-
-function _uidsSortedDesc(uids) {
-  return [...uids].map((n) => Number(n)).filter((n) => Number.isFinite(n)).sort((a, b) => b - a);
-}
-
-// Compare email date strings as instants, not lex strings. Falls back to lex
-// only when both dates are unparseable, so we still get stable ordering.
-function _compareDatesDesc(a, b) {
-  const av = a ? Date.parse(String(a).replace(" ", "T")) : NaN;
-  const bv = b ? Date.parse(String(b).replace(" ", "T")) : NaN;
-  const aOk = Number.isFinite(av);
-  const bOk = Number.isFinite(bv);
-  if (aOk && bOk) return bv - av;
-  if (aOk) return -1;
-  if (bOk) return 1;
-  return String(b || "").localeCompare(String(a || ""));
-}
-
-function _dateOnly(raw) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(raw);
-}
-
-function _isoDate(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-// Expand relative date shortcuts (today, yesterday, last-week, and <N><unit>
-// with unit ∈ m h d w mo y) into a concrete date string. Lives in core so BOTH
-// the CLI and the MCP server get the behavior the MCP schema advertises — the
-// MCP path used to pass "2d" straight through, where new Date("2d") => NaN and
-// the filter was silently dropped.
-function _expandRelativeDate(raw) {
-  const value = String(raw || "").trim().toLowerCase();
-  if (!value) return "";
-  const now = new Date();
-  if (value === "today") return _isoDate(now);
-  if (value === "yesterday") {
-    const d = new Date(now); d.setDate(d.getDate() - 1); return _isoDate(d);
-  }
-  if (value === "last-week" || value === "lastweek") {
-    const d = new Date(now); d.setDate(d.getDate() - 7); return _isoDate(d);
-  }
-  if (value === "last-month" || value === "lastmonth") {
-    const d = new Date(now); d.setMonth(d.getMonth() - 1); return _isoDate(d);
-  }
-  const m = value.match(/^(\d+)\s*(mo|m|h|d|w|y)$/);
-  if (m) {
-    const n = Number(m[1]);
-    const unit = m[2];
-    const d = new Date(now);
-    if (unit === "m") d.setMinutes(d.getMinutes() - n);
-    else if (unit === "h") d.setHours(d.getHours() - n);
-    else if (unit === "d") d.setDate(d.getDate() - n);
-    else if (unit === "w") d.setDate(d.getDate() - n * 7);
-    else if (unit === "mo") d.setMonth(d.getMonth() - n);
-    else if (unit === "y") d.setFullYear(d.getFullYear() - n);
-    if (unit === "d" || unit === "w" || unit === "mo" || unit === "y") return _isoDate(d);
-    return d.toISOString();
-  }
-  return String(raw || "").trim(); // pass through to the strict parser
-}
-
-function _parseDateInput(raw, { end = false } = {}) {
-  const raw0 = String(raw || "").trim();
-  const value = _expandRelativeDate(raw0);
-  if (!value) return { date: null, sql: "" };
-
-  const unparseable = () => ({ date: null, sql: "", warning: `Ignored unparseable date "${raw0}"` });
-
-  if (_dateOnly(value)) {
-    const start = new Date(`${value}T00:00:00`);
-    if (Number.isNaN(start.getTime())) return unparseable();
-    if (end) {
-      const before = new Date(start.getTime());
-      before.setDate(before.getDate() + 1);
-      return { date: before, sql: `${value} 23:59:59` };
-    }
-    return { date: start, sql: `${value} 00:00:00` };
-  }
-
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return unparseable();
-  const sql = formatDateTime(d) || value;
-  if (end) return { date: new Date(d.getTime() + 1000), sql };
-  return { date: d, sql };
 }
 
 async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOnly, since, before, previewChars = 0, includeServerUids = false, includeAccountUnread = false }) {
@@ -557,32 +437,6 @@ async function listEmails({
 
 // Pure deadline predicate (extracted so the timeout logic is unit-testable
 // without timing flakiness). timeoutMs <= 0 means "no deadline".
-function _deadlineExceeded(started, timeoutMs, now) {
-  const t = Number(timeoutMs || 0);
-  if (!(t > 0)) return false;
-  return (Number(now != null ? now : Date.now()) - Number(started)) >= t;
-}
-
-// HARD wall-clock bound: resolve with `promise`'s value, or `onTimeout()` if it
-// doesn't settle within `ms`. The cooperative _deadlineExceeded checks only fire
-// BETWEEN imap operations; a single slow op (e.g. a QQ/163 client-side scan of a
-// whole INBOX, or a stuck connect) can block past the deadline. This guarantees
-// searchEmails returns even then. The orphaned op is harmless for the one-shot
-// CLI (process.exit cleans up); the daemon closes the connection on its own.
-// `promise` rejections pass through so existing try/catch handling still runs.
-function _raceTimeout(promise, ms, onTimeout) {
-  if (!(ms > 0)) return promise;
-  let timer;
-  const guard = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(onTimeout()), ms);
-    if (timer && typeof timer.unref === "function") timer.unref();
-  });
-  return Promise.race([
-    Promise.resolve(promise).finally(() => clearTimeout(timer)),
-    guard,
-  ]);
-}
-
 async function searchEmails({ query, from = "", subject = "", account_id = "", date_from = "", date_to = "", limit = 50, offset = 0, unread_only = false, folder = "all", preview_chars = 0, timeout_ms = 0 } = {}) {
   const previewChars = Math.max(0, Number(preview_chars || 0));
   const timeoutMs = Math.max(0, Number(timeout_ms || 0));
@@ -886,140 +740,6 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
     failed_searches: [],
     partial_success: failed_accounts.length > 0,
   };
-}
-
-function _stripUrls(text) {
-  return String(text || "").replace(/https?:\/\/\S+/gi, "[link]");
-}
-
-// Dependency-free HTML -> plain text. Good enough to give an agent a readable
-// body for HTML-only mail (transactional senders, Moomoo, etc.) without shelling
-// out to a parser. Not a sanitizer; output is plain text only.
-function _htmlToText(html) {
-  let s = String(html || "");
-  s = s.replace(/<!--[\s\S]*?-->/g, " ");
-  s = s.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ");
-  s = s.replace(/<\/(p|div|li|tr|h[1-6]|blockquote|section|article|header|footer|table|ul|ol)>/gi, "\n");
-  s = s.replace(/<br\s*\/?>/gi, "\n");
-  s = s.replace(/<[^>]+>/g, " ");
-  s = s
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, n) => {
-      try {
-        return String.fromCodePoint(Number(n));
-      } catch {
-        return " ";
-      }
-    });
-  s = s.replace(/[ \t\f\r]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  return s;
-}
-
-// Single source of truth for body/html projection across showEmail (live + test)
-// and showEmails. html_max_len semantics: <0 = unlimited, 0 = strip, >0 = cap.
-// When the text body is empty but html exists, derive a text body from the html.
-function _composeBody({ text, html, body_max_len = 0, html_max_len = 0, include_html = true, strip_urls = false }) {
-  const includeHtml = include_html !== false;
-  const htmlText = typeof html === "string" ? html : "";
-  const rawText = String(text || "");
-  // HTML-only mail often carries a near-empty text/plain part (just whitespace),
-  // so treat whitespace-only text as absent and fall back to the html.
-  const hasText = rawText.trim().length > 0;
-
-  let body = hasText ? rawText : "";
-  let bodySource = hasText ? "text" : "empty";
-  if (!hasText && htmlText) {
-    const derived = _htmlToText(htmlText);
-    if (derived) {
-      body = derived;
-      bodySource = "html_derived";
-    }
-  }
-
-  const bodyBase = strip_urls ? _stripUrls(body) : body;
-  const bodyMax = Math.max(0, Number(body_max_len || 0));
-  let bodyOut = bodyBase;
-  let bodyTruncated = false;
-  if (bodyMax > 0 && bodyOut.length > bodyMax) {
-    bodyOut = bodyOut.slice(0, bodyMax);
-    bodyTruncated = true;
-  }
-
-  let htmlOut = "";
-  let htmlTruncated = false;
-  if (includeHtml) {
-    const hm = Number(html_max_len);
-    if (hm < 0) {
-      htmlOut = htmlText; // unlimited
-    } else if (hm === 0) {
-      htmlOut = ""; // strip
-    } else if (htmlText.length > hm) {
-      htmlOut = htmlText.slice(0, hm);
-      htmlTruncated = true;
-    } else {
-      htmlOut = htmlText;
-    }
-  }
-
-  return {
-    body: bodyOut,
-    html_body: htmlOut,
-    body_source: bodySource,
-    body_included: Boolean(bodyOut),
-    html_included: includeHtml,
-    body_url_stripped: Boolean(strip_urls),
-    body_length: bodyBase.length,
-    html_length: htmlText.length,
-    body_truncated: bodyTruncated,
-    html_truncated: htmlTruncated,
-  };
-}
-
-function _parseListUnsubscribeHeader(value) {
-  if (!value) return null;
-  const str = Array.isArray(value) ? value.join(", ") : String(value);
-  const mailto = (str.match(/<(mailto:[^>]+)>/i) || str.match(/\b(mailto:[^\s,>]+)/i) || [])[1] || null;
-  const http = (str.match(/<(https?:[^>]+)>/i) || str.match(/\b(https?:[^\s,>]+)/i) || [])[1] || null;
-  if (!mailto && !http) return null;
-  return { mailto, http };
-}
-
-function _formatListUnsubscribeFromListHeader(unsubscribe) {
-  if (!unsubscribe) return null;
-  const mail = unsubscribe.mail || "";
-  const url = unsubscribe.url || "";
-  return {
-    mailto: mail ? (String(mail).toLowerCase().startsWith("mailto:") ? mail : `mailto:${mail}`) : null,
-    http: url || null,
-  };
-}
-
-// Extract List-Unsubscribe header values from a mailparser-parsed email.
-// mailparser may fold List-Unsubscribe into parsed.headers.get('list').unsubscribe
-// or preserve a direct parsed.headers.get('list-unsubscribe') value.
-function _extractListUnsubscribe(parsed) {
-  if (!parsed || !parsed.headers) return null;
-  const list = parsed.headers.get("list");
-  const fromList = _formatListUnsubscribeFromListHeader(list && list.unsubscribe);
-  if (fromList) return fromList;
-
-  const direct = _parseListUnsubscribeHeader(parsed.headers.get("list-unsubscribe"));
-  if (direct) return direct;
-
-  // Fallback: scan raw headerLines.
-  if (Array.isArray(parsed.headerLines)) {
-    const line = parsed.headerLines.find((h) => h.key === "list-unsubscribe");
-    if (line) {
-      const fromRaw = _parseListUnsubscribeHeader(line.line || "");
-      if (fromRaw) return fromRaw;
-    }
-  }
-  return null;
 }
 
 async function showEmail({
@@ -1378,62 +1098,6 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
   });
 }
 
-function _trashFolderCandidates(account, preferredName) {
-  const raw = account && account.raw ? account.raw : {};
-  const candidates = [
-    preferredName,
-    raw.trash_folder,
-    raw.trashFolder,
-    raw.trash,
-    raw.folders && raw.folders.trash,
-    "Trash",
-    "已删除",
-    "Deleted Items",
-    "[Gmail]/Trash",
-  ];
-  const out = [];
-  for (const name of candidates) {
-    const s = String(name || "").trim();
-    if (s && !out.includes(s)) out.push(s);
-  }
-  return out;
-}
-
-async function _findTrashFolder(client, preferredName, account) {
-  const candidates = _trashFolderCandidates(account, preferredName);
-  const candidateSet = new Set(candidates);
-  const mailboxes = await _listMailboxes(client);
-
-  let exactMatch = "";
-  let bySpecialUse = "";
-  for (const mb of mailboxes) {
-    const pathName = mb.path || mb.name || "";
-    if (!pathName) continue;
-    const special = String(mb.specialUse || "");
-    if (special === "\\Trash") {
-      bySpecialUse = pathName;
-      // \Trash is authoritative; stop searching as soon as we find it.
-      break;
-    }
-    if (!exactMatch && candidateSet.has(pathName)) exactMatch = pathName;
-  }
-
-  if (bySpecialUse) return bySpecialUse;
-  if (exactMatch) return exactMatch;
-  // No \Trash special-use and no known-name match: fail loudly so
-  // we don't silently fall through to a non-existent trash folder, which
-  // would error out per UID inside messageMove anyway.
-  throw new Error(
-    `Trash folder not found: server has no \\Trash special-use mailbox and none of these folders exist: ${candidates.join(", ")}. Pass --trash-folder <name> or use --permanent.`
-  );
-}
-
-async function _uidExistsInFolder(client, folder, uid) {
-  await client.mailboxOpen(folder);
-  const msg = await client.fetchOne(Number(uid), { flags: true }, { uid: true });
-  return Boolean(msg);
-}
-
 async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, trash_folder = "Trash", account_id = "", dry_run = false } = {}) {
   const ids = (email_ids || []).map((x) => String(x));
   if (!ids.length) return { success: false, error: "Missing email_ids" };
@@ -1529,19 +1193,6 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
   });
 }
 
-function _outgoingAttachments(attachments) {
-  if (!attachments) return [];
-  return Array.isArray(attachments) ? attachments.filter(Boolean) : [attachments];
-}
-
-function _outgoingAttachmentPreview(attachments) {
-  return _outgoingAttachments(attachments).map((a) => ({
-    filename: a.filename || (a.path ? path.basename(String(a.path)) : "attachment"),
-    path: a.path || undefined,
-    content_type: a.contentType || undefined,
-  }));
-}
-
 async function sendEmail({ to, subject, body, cc, bcc, account_id = "", is_html = false, attachments = [] } = {}) {
   const tos = Array.isArray(to) ? to : [to];
   const recipients = tos.map((x) => String(x)).filter((x) => x.trim());
@@ -1581,41 +1232,6 @@ async function sendEmail({ to, subject, body, cc, bcc, account_id = "", is_html 
 // Common reply-prefix forms across locales. Matches "Re:", "RE：", "回复:",
 // "答复:", "Sv:", "Antwort:", "AW:", "RES:", "Tr:" with optional whitespace.
 const _REPLY_PREFIX_RE = /^\s*(re|aw|antwort|sv|res|回复|答复|回覆|tr)\s*[:：]/i;
-
-function _splitAddressList(value) {
-  if (!value) return [];
-  return String(value)
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function _addressEmail(addr) {
-  const m = String(addr).match(/<([^>]+)>/);
-  return (m ? m[1] : String(addr)).trim().toLowerCase();
-}
-
-function _dedupeAddresses(list, exclude) {
-  const excluded = new Set((exclude || []).map((x) => String(x).toLowerCase()));
-  const seen = new Set();
-  const out = [];
-  for (const addr of list) {
-    const key = _addressEmail(addr);
-    if (!key || excluded.has(key) || seen.has(key)) continue;
-    seen.add(key);
-    out.push(addr);
-  }
-  return out;
-}
-
-function _buildReferences(detail) {
-  const refs = [];
-  const existing = detail.references ? String(detail.references).trim() : "";
-  if (existing) refs.push(existing);
-  const parent = detail.message_id ? String(detail.message_id).trim() : "";
-  if (parent && !refs.join(" ").includes(parent)) refs.push(parent);
-  return refs.join(" ").trim();
-}
 
 async function replyEmail({ email_id, body, reply_all = false, folder = "INBOX", account_id = "", is_html = false, attachments = [], dry_run = false } = {}) {
   const detail = await showEmail({ email_id, folder, account_id });
