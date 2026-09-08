@@ -76,6 +76,11 @@ mail-use upgrade             # download, verify sha256, replace in place, restar
 mail-use upgrade --tag v3.1.0   # pin an exact release (also the way to roll back)
 ```
 
+When the daemon is running it notices new releases for you: one unauthenticated GET to
+the GitHub releases API per day (`MAILBOX_UPDATE_CHECK_HOURS`, `0` disables), surfaced as
+`update` in `mail-use daemon status --json`. It only ever *reports* — it never downloads
+or installs anything.
+
 `upgrade` is never automatic and never runs on its own: a tool that silently replaces
 its own executable is a supply-chain surprise, not a convenience. It refuses to install
 a tarball whose published `.sha256` doesn't match, and refuses to run at all from a dev
@@ -216,6 +221,7 @@ Knobs, if the defaults do not suit you:
 | `MAILBOX_POOL_IDLE_MS` | `600000` | Close connections idle this long (`0` disables reaping) |
 | `MAILBOX_POOL_KEEP_WARM` | `1` | Connections per account kept warm through reaping |
 | `MAILBOX_NO_DAEMON` | unset | `1` makes the CLI skip the daemon entirely |
+| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | Daemon's passive update check (`0` disables) |
 
 ## AI usage guide
 

@@ -4,6 +4,7 @@ const { Command } = require("commander");
 
 const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
+const { getCliVersion: _resolveCliVersion } = require("./cli_version");
 // All calls into core/workflows go through these proxies. When a mailbox
 // daemon is running, requests are forwarded over a Unix socket so we
 // reuse pooled IMAP connections (1-3s saved per call). When no daemon
@@ -561,44 +562,6 @@ function _createStopSignal() {
       });
     },
   };
-}
-
-function _resolveCliVersion() {
-  const env = process.env.MAILBOX_CLI_VERSION || process.env.MAILBOX_VERSION || "";
-  if (env && typeof env === "string" && env.trim()) return env.trim();
-
-  // Version baked into the binary at release-build time (see _version.js). pkg
-  // bundles this statically-required module, so the compiled binary reports the
-  // real version even though it can't read package.json at runtime. Skipped when
-  // still the "0.0.0" default (dev / unstamped) so we fall through to package.json.
-  try {
-    const baked = require("./_version.js");
-    if (baked && typeof baked === "string" && baked.trim() && baked.trim() !== "0.0.0") {
-      return baked.trim();
-    }
-  } catch {
-    // ignore — fall through to package.json
-  }
-
-  const candidates = [
-    path.join(__dirname, "..", "package.json"),
-    path.join(__dirname, "..", "..", "package.json"),
-    path.join(process.cwd(), "package.json"),
-  ];
-
-  for (const p of candidates) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      const raw = fs.readFileSync(p, "utf8");
-      const parsed = JSON.parse(raw);
-      const version = parsed && parsed.version ? String(parsed.version).trim() : "";
-      if (version) return version;
-    } catch {
-      // ignore
-    }
-  }
-
-  return "0.0.0";
 }
 
 // Send an admin RPC (__ping/__reload/__shutdown) directly to the daemon
@@ -1864,6 +1827,9 @@ async function main(argv) {
           if (r.sync.last_sync_at) process.stdout.write(`  last_sync_at=${r.sync.last_sync_at}\n`);
           if (r.sync.last_sync_error) process.stdout.write(`  last_sync_error=${r.sync.last_sync_error}\n`);
           if (r.sync.prewarm) process.stdout.write(`  prewarm=${r.sync.prewarm.completed}/${r.sync.prewarm.started} (${r.sync.prewarm.failed} failed)\n`);
+        }
+        if (r.update && r.update.update_available) {
+          process.stdout.write(`  update: ${r.update.current} -> ${r.update.latest} available (run: mail-use upgrade)\n`);
         }
       } });
       process.exit(rc);

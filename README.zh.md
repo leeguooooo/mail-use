@@ -63,6 +63,10 @@ mail-use upgrade                # 下载、校验 sha256、原地替换、重启
 mail-use upgrade --tag v3.1.0   # 装指定版本（回滚也走这个）
 ```
 
+daemon 在跑的时候会替你留意新版本：每天一次对 GitHub releases API 的匿名 GET
+（`MAILBOX_UPDATE_CHECK_HOURS`，设 `0` 关闭），结果出现在
+`mail-use daemon status --json` 的 `update` 字段。它只报告，不下载也不安装。
+
 `upgrade` 不会自动执行，也不会自己在后台跑：一个悄悄替换自身可执行文件的工具是供应链
 意外，不是便利。校验和跟发布的 `.sha256` 对不上就拒绝安装；在源码检出里直接拒绝运行
 （那里的 `process.execPath` 是你的 `node`）。重跑 `curl … install.sh | sh` 效果一样。
@@ -201,6 +205,7 @@ session 变多不会让 IMAP 连接变多。macOS 上连着 3 个账号时的实
 | `MAILBOX_POOL_IDLE_MS` | `600000` | 空闲多久回收连接（`0` 关闭回收） |
 | `MAILBOX_POOL_KEEP_WARM` | `1` | 回收时每账号保留几条热连接 |
 | `MAILBOX_NO_DAEMON` | 未设置 | 设为 `1` 让 CLI 完全跳过 daemon |
+| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | daemon 的被动版本检查（`0` 关闭） |
 
 ## AI 集成说明
 

@@ -23,6 +23,50 @@ const { digest, monitor, inbox, cleanup } = (() => {
   try { return require("@mail-use/workflows"); } catch { return {}; }
 })();
 
+// Passive update check. The daemon is the only long-lived thing here, so it is
+// the natural place to notice a new release without making every CLI call pay a
+// network round-trip. Strictly a *notice*: it never downloads or installs
+// anything — `mail-use upgrade` stays explicit.
+//
+// One unauthenticated GET to api.github.com per interval, carrying nothing but a
+// User-Agent. Set MAILBOX_UPDATE_CHECK_HOURS=0 to turn it off entirely.
+const UPDATE_CHECK_DEFAULT_HOURS = 24;
+const UPDATE_CHECK_START_DELAY_MS = 60 * 1000; // let prewarm finish first
+
+function _updateCheckIntervalMs() {
+  const raw = process.env.MAILBOX_UPDATE_CHECK_HOURS;
+  const hours = raw == null || String(raw).trim() === "" ? UPDATE_CHECK_DEFAULT_HOURS : Number(raw);
+  if (!Number.isFinite(hours) || hours <= 0) return 0;
+  return hours * 60 * 60 * 1000;
+}
+
+function _startUpdateChecks(ctx) {
+  const intervalMs = _updateCheckIntervalMs();
+  if (intervalMs <= 0) return null;
+
+  const run = async () => {
+    try {
+      const { checkForUpdate } = require("./upgrade");
+      const { getCliVersion } = require("./cli_version");
+      const r = await checkForUpdate(getCliVersion());
+      ctx.update = { ...r, checked_at: new Date().toISOString(), error: null };
+      if (r.update_available) {
+        ctx.log(`[mail-use daemon] update available: ${r.current} -> ${r.latest} (run: mail-use upgrade)`);
+      }
+    } catch (e) {
+      // Offline, rate-limited, DNS-blocked: all normal. Record it and stay quiet
+      // rather than logging on a loop.
+      ctx.update = { ...(ctx.update || {}), checked_at: new Date().toISOString(), error: (e && e.message) || String(e) };
+    }
+  };
+
+  const first = setTimeout(run, UPDATE_CHECK_START_DELAY_MS);
+  if (typeof first.unref === "function") first.unref();
+  const timer = setInterval(run, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+  return { first, timer };
+}
+
 function getSocketPath() {
   if (process.env.MAILBOX_DAEMON_SOCKET) return process.env.MAILBOX_DAEMON_SOCKET;
   const base = process.env.XDG_RUNTIME_DIR || path.join(os.homedir(), ".cache", "mailbox");
@@ -71,7 +115,9 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
   const startedAt = Date.now();
   const stats = { syncs_attempted: 0, syncs_ok: 0, syncs_failed: 0, last_sync_at: null, last_sync_error: null };
 
-  const server = net.createServer((conn) => _handleConn(conn, { pool, startedAt, log, stats }));
+  const ctx = { pool, startedAt, log, stats, update: null };
+  const updateTimers = _startUpdateChecks(ctx);
+  const server = net.createServer((conn) => _handleConn(conn, ctx));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(sockPath, () => {
@@ -151,6 +197,10 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
   const cleanup = async () => {
     log(`[mail-use daemon] shutting down (pid=${process.pid})`);
     syncStopped = true;
+    if (updateTimers) {
+      clearTimeout(updateTimers.first);
+      clearInterval(updateTimers.timer);
+    }
     try { await pool.closeAll(); } catch { /* ignore */ }
     try { server.close(); } catch { /* ignore */ }
     try { fs.unlinkSync(sockPath); } catch { /* ignore */ }
@@ -213,6 +263,7 @@ async function _dispatch(line, conn, ctx) {
       uptime_ms: Date.now() - ctx.startedAt,
       pool: ctx.pool.stats(),
       sync: ctx.stats || null,
+      update: ctx.update || null,
     } });
   }
   if (fnName === "__reload") {
@@ -432,4 +483,6 @@ async function uninstallAutostart() {
 module.exports = {
   startDaemon, getSocketPath, getPidFilePath,
   installAutostart, uninstallAutostart,
+  // Exported for tests: the update check must stay disableable and unref'd.
+  _updateCheckIntervalMs, _startUpdateChecks,
 };
