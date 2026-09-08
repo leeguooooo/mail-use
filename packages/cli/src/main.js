@@ -1,20 +1,18 @@
-const fs = require("fs");
-const path = require("path");
 const { Command } = require("commander");
 
 const { contract } = require("@mail-use/shared");
-const { makeProxies } = require("./core_client");
 const { getCliVersion: _resolveCliVersion } = require("./cli_version");
-// All calls into core/workflows go through these proxies. When a mailbox
-// daemon is running, requests are forwarded over a Unix socket so we
-// reuse pooled IMAP connections (1-3s saved per call). When no daemon
-// is around, the proxy falls back transparently to in-process execution.
-const { accounts, email, imap, smtp, sync, digest, monitor, inbox, cleanup } = makeProxies();
-
-function _printTextNotImplemented(label) {
-  // Goes to stderr so it never corrupts a JSON pipe consumer.
-  process.stderr.write(`${label} (text mode) is not implemented yet. Use --json.\n`);
-}
+const { accounts, email, imap, smtp, sync, digest, monitor, inbox, cleanup } = require("./proxies");
+const {
+  _printTextNotImplemented, _displayWidth, _padRight, _truncate, _printRows,
+  _printAccountList, _printEmailList, _printFolderList,
+} = require("./cli/render");
+const {
+  _validatePaging, _expandDateShortcut, _isoDate, _validateDateOpt, _readBodyFile,
+  _collectOption, _resolveLocalAttachments, _attachmentPreview, _mailAttachments,
+  _explicitOptionValue,
+} = require("./cli/options");
+const { _commandToJson, _findCommandPath } = require("./cli/help_json");
 
 // --extract-code: scan subject+body for verification/OTP codes and stamp a
 // `codes:[...]` field onto a show result (single or batch). Mutates in place
@@ -32,141 +30,7 @@ function _attachExtractedCodes(result) {
   return result;
 }
 
-// Width-aware truncation that counts wide CJK glyphs as 2 columns so columns
-// stay aligned in a monospace terminal.
-function _displayWidth(str) {
-  let w = 0;
-  for (const ch of String(str || "")) {
-    const code = ch.codePointAt(0);
-    // Rough CJK / fullwidth range — good enough for table alignment.
-    if (
-      (code >= 0x1100 && code <= 0x115f) ||
-      (code >= 0x2e80 && code <= 0x303e) ||
-      (code >= 0x3041 && code <= 0x33ff) ||
-      (code >= 0x3400 && code <= 0x4dbf) ||
-      (code >= 0x4e00 && code <= 0x9fff) ||
-      (code >= 0xa000 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe30 && code <= 0xfe4f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6)
-    ) {
-      w += 2;
-    } else {
-      w += 1;
-    }
-  }
-  return w;
-}
-function _padRight(str, width) {
-  const w = _displayWidth(str);
-  return w >= width ? str : str + " ".repeat(width - w);
-}
-function _truncate(str, max) {
-  let out = "";
-  let w = 0;
-  for (const ch of String(str || "")) {
-    const cw = _displayWidth(ch);
-    if (w + cw > max - 1) {
-      out += "…";
-      return out;
-    }
-    out += ch;
-    w += cw;
-  }
-  return out;
-}
-function _printRows(rows, columns) {
-  if (!rows || rows.length === 0) return;
-  const widths = columns.map((c) => Math.max(_displayWidth(c.title), ...rows.map((r) => Math.min(c.max || 80, _displayWidth(String(r[c.key] != null ? r[c.key] : ""))))));
-  const sep = "  ";
-  const header = columns.map((c, i) => _padRight(c.title, widths[i])).join(sep);
-  process.stdout.write(header + "\n");
-  process.stdout.write(columns.map((_, i) => "-".repeat(widths[i])).join(sep) + "\n");
-  for (const r of rows) {
-    const line = columns.map((c, i) => {
-      const v = r[c.key] != null ? String(r[c.key]) : "";
-      return _padRight(_truncate(v, widths[i]), widths[i]);
-    }).join(sep);
-    process.stdout.write(line + "\n");
-  }
-}
 
-function _printAccountList(result) {
-  if (!result || !result.success) {
-    process.stderr.write((result && result.error) ? result.error + "\n" : "failed\n");
-    return;
-  }
-  const rows = result.accounts || [];
-  if (!rows.length) {
-    process.stdout.write("(no accounts configured)\n");
-    return;
-  }
-  _printRows(rows, [
-    { key: "id", title: "ID", max: 24 },
-    { key: "email", title: "EMAIL", max: 40 },
-    { key: "provider", title: "PROVIDER", max: 12 },
-    { key: "imap_host", title: "IMAP HOST", max: 30 },
-    { key: "description", title: "DESCRIPTION", max: 30 },
-  ]);
-  process.stdout.write(`\n${rows.length} account(s)\n`);
-}
-
-function _printEmailList(result) {
-  if (!result || !result.success) {
-    process.stderr.write((result && result.error) ? result.error + "\n" : "failed\n");
-    return;
-  }
-  const rows = (result.emails || []).map((e) => ({
-    flag: (e.unread ? "●" : " ") + (e.is_flagged || e.flagged ? "★" : " ") + (e.has_attachments ? "📎" : " "),
-    date: String(e.date || "").slice(0, 16),
-    folder: e.folder || "",
-    from: e.from || "",
-    subject: e.subject || "",
-    id: e.id || e.uid || "",
-  }));
-  if (!rows.length) {
-    process.stdout.write("(no emails)\n");
-    if (result.failed_accounts && result.failed_accounts.length) {
-      for (const fa of result.failed_accounts) {
-        process.stderr.write(`account ${fa.account || fa.account_id || ""} failed: ${fa.error || ""}\n`);
-      }
-    }
-    return;
-  }
-  _printRows(rows, [
-    { key: "flag", title: "STATE", max: 5 },
-    { key: "date", title: "DATE", max: 16 },
-    { key: "folder", title: "FOLDER", max: 18 },
-    { key: "from", title: "FROM", max: 32 },
-    { key: "subject", title: "SUBJECT", max: 60 },
-    { key: "id", title: "UID", max: 12 },
-  ]);
-  const totalFound = result.total_found != null ? result.total_found : result.total_in_folder;
-  process.stdout.write(`\n${rows.length} shown` + (totalFound != null ? ` (of ${totalFound})` : "") + "\n");
-}
-
-function _printFolderList(result) {
-  if (!result || !result.success) {
-    process.stderr.write((result && result.error) ? result.error + "\n" : "failed\n");
-    return;
-  }
-  const rows = result.folders || [];
-  _printRows(rows, [
-    { key: "path", title: "PATH", max: 40 },
-    { key: "delimiter", title: "DELIM", max: 5 },
-    { key: "attributes", title: "FLAGS", max: 30 },
-  ]);
-  process.stdout.write(`\n${rows.length} folder(s) in ${result.account || "account"}\n`);
-}
-
-const MAX_BODY_FILE_BYTES = Number(process.env.MAILBOX_MAX_BODY_FILE_BYTES || 10 * 1024 * 1024); // 10 MiB
-
-// Hard upper bound on per-call result limits. Without this, a typo like
-// --limit 99999999 would happily try to fetch the entire mailbox (and
-// trigger IMAP rate limits / OOM). Override via env if you really need it.
-const MAX_RESULT_LIMIT = Number(process.env.MAILBOX_MAX_LIMIT || 1000);
 
 // Parse a global email ref. Accepts either "account_id:uid" or a bare uid.
 // Returns { id, account_id } where account_id is "" if not present in the
@@ -405,135 +269,6 @@ async function _applyIdRefMutation({ operation, refs, accountId, defaultFolder, 
   return { success: results.every((r) => r && r.success), folders_count: results.length, results };
 }
 
-// Validate --limit/--offset. Returns { ok, limit, offset, error }.
-function _validatePaging(limitRaw, offsetRaw, { defaultLimit }) {
-  const limit = limitRaw == null || limitRaw === "" ? defaultLimit : Number(limitRaw);
-  const offset = offsetRaw == null || offsetRaw === "" ? 0 : Number(offsetRaw);
-  if (!Number.isFinite(limit) || limit < 0) {
-    return { ok: false, error: `--limit must be a non-negative number (got ${limitRaw})` };
-  }
-  if (!Number.isFinite(offset) || offset < 0) {
-    return { ok: false, error: `--offset must be a non-negative number (got ${offsetRaw})` };
-  }
-  if (limit > MAX_RESULT_LIMIT) {
-    return { ok: false, error: `--limit ${limit} exceeds MAILBOX_MAX_LIMIT=${MAX_RESULT_LIMIT}; raise the env var if intentional` };
-  }
-  return { ok: true, limit, offset };
-}
-
-// Resolve human-friendly date shortcuts to YYYY-MM-DD before they reach the
-// core parser. Accepts: ISO 8601, YYYY-MM-DD, "today", "yesterday",
-// relative spans like "2d", "3w", "4mo", "1y", "30m", "12h".
-function _expandDateShortcut(raw) {
-  const value = String(raw || "").trim().toLowerCase();
-  if (!value) return "";
-  const now = new Date();
-  if (value === "today") return _isoDate(now);
-  if (value === "yesterday") {
-    const d = new Date(now); d.setDate(d.getDate() - 1); return _isoDate(d);
-  }
-  if (value === "last-week" || value === "lastweek") {
-    const d = new Date(now); d.setDate(d.getDate() - 7); return _isoDate(d);
-  }
-  if (value === "last-month" || value === "lastmonth") {
-    const d = new Date(now); d.setMonth(d.getMonth() - 1); return _isoDate(d);
-  }
-  // Relative: <N><unit>  unit ∈ m h d w mo y
-  const m = value.match(/^(\d+)\s*(mo|m|h|d|w|y)$/);
-  if (m) {
-    const n = Number(m[1]);
-    const unit = m[2];
-    const d = new Date(now);
-    if (unit === "m") d.setMinutes(d.getMinutes() - n);
-    else if (unit === "h") d.setHours(d.getHours() - n);
-    else if (unit === "d") d.setDate(d.getDate() - n);
-    else if (unit === "w") d.setDate(d.getDate() - n * 7);
-    else if (unit === "mo") d.setMonth(d.getMonth() - n);
-    else if (unit === "y") d.setFullYear(d.getFullYear() - n);
-    // For coarse units (d/w/mo/y) collapse to date-only so IMAP SINCE
-    // semantics line up; for finer units keep the timestamp.
-    if (unit === "d" || unit === "w" || unit === "mo" || unit === "y") return _isoDate(d);
-    return d.toISOString();
-  }
-  return raw; // pass through to underlying parser
-}
-function _isoDate(d) {
-  const y = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  return `${y}-${mo}-${da}`;
-}
-
-// Validate a date string. Accepts YYYY-MM-DD, ISO 8601, or one of the
-// relative shortcuts handled by _expandDateShortcut.
-function _validateDateOpt(name, raw) {
-  const value = String(raw || "").trim();
-  if (!value) return { ok: true };
-  const expanded = _expandDateShortcut(value);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(expanded)) {
-    const d = new Date(`${expanded}T00:00:00`);
-    if (!Number.isNaN(d.getTime())) return { ok: true, expanded };
-  }
-  const d = new Date(expanded);
-  if (!Number.isNaN(d.getTime())) return { ok: true, expanded };
-  return { ok: false, error: `${name} value "${value}" is not a valid date (expected YYYY-MM-DD, ISO 8601, or relative like 2d/3w/1mo/today/yesterday)` };
-}
-
-function _readBodyFile(bodyFilePath) {
-  const st = fs.statSync(bodyFilePath);
-  if (st.size > MAX_BODY_FILE_BYTES) {
-    throw new Error(`--body-file exceeds ${MAX_BODY_FILE_BYTES} bytes (size=${st.size})`);
-  }
-  return fs.readFileSync(bodyFilePath, "utf8");
-}
-
-function _collectOption(value, previous) {
-  return [...(previous || []), value];
-}
-
-function _resolveLocalAttachments(values) {
-  const files = Array.isArray(values) ? values : [];
-  return files.map((raw) => {
-    const input = String(raw || "").trim();
-    if (!input) throw new Error("--attachment path cannot be empty");
-    const filePath = path.resolve(process.cwd(), input);
-    let st;
-    try {
-      st = fs.statSync(filePath);
-    } catch {
-      throw new Error(`--attachment not found: ${input}`);
-    }
-    if (!st.isFile()) throw new Error(`--attachment is not a file: ${input}`);
-    return {
-      filename: path.basename(filePath),
-      path: filePath,
-      size_bytes: st.size,
-    };
-  });
-}
-
-function _attachmentPreview(attachments) {
-  return (attachments || []).map((a) => ({
-    filename: a.filename,
-    path: a.path,
-    size_bytes: a.size_bytes,
-  }));
-}
-
-function _mailAttachments(attachments) {
-  return (attachments || []).map((a) => ({
-    filename: a.filename,
-    path: a.path,
-  }));
-}
-
-function _explicitOptionValue(cmd, opts, key) {
-  if (cmd && typeof cmd.getOptionValueSource === "function" && cmd.getOptionValueSource(key) === "cli") {
-    return opts[key];
-  }
-  return undefined;
-}
-
 // Cooperative shutdown for foreground daemons. SIGINT/SIGTERM flips the flag
 // and resolves any in-flight wait so the loop can finish its current pass
 // (e.g. mid-flush sqlite write) before exiting.
@@ -600,58 +335,6 @@ async function _daemonAdmin(fnName) {
     });
     setTimeout(() => settle({ success: false, error: "daemon did not respond within 2s", error_code: "network_error" }), 2000);
   });
-}
-
-// Recursively serialize a commander Command into a JSON descriptor that an
-// AI agent can introspect. Returns null if cmd is missing.
-function _commandToJson(cmd) {
-  if (!cmd) return null;
-  const out = {
-    name: cmd.name(),
-    description: cmd.description() || "",
-    usage: cmd.usage() || "",
-    arguments: (cmd._args || cmd.registeredArguments || []).map((a) => ({
-      name: a.name(),
-      description: a.description || "",
-      required: Boolean(a.required),
-      variadic: Boolean(a.variadic),
-      default: a.defaultValue,
-    })),
-    options: (cmd.options || []).map((o) => ({
-      flags: o.flags,
-      long: o.long || "",
-      short: o.short || "",
-      description: o.description || "",
-      required: Boolean(o.required),
-      optional: Boolean(o.optional),
-      default: o.defaultValue,
-      negate: Boolean(o.negate),
-    })),
-    subcommands: (cmd.commands || []).filter((c) => !c._hidden && c.name() !== "help").map((c) => ({
-      name: c.name(),
-      description: c.description() || "",
-    })),
-  };
-  return out;
-}
-function _findCommandPath(program, argv) {
-  let cur = program;
-  let unknown = null;
-  for (const tok of argv) {
-    if (tok.startsWith("-")) break;
-    const next = (cur.commands || []).find((c) => c.name() === tok);
-    if (next) {
-      cur = next;
-      continue;
-    }
-    // No subcommand matched. If the current command expects subcommands, this
-    // token is an unknown COMMAND (e.g. `bogus --help`); otherwise it's a
-    // positional argument (e.g. `email show 101 --help`) and we stop here.
-    const expectsSub = (cur.commands || []).some((c) => c.name() !== "help");
-    if (expectsSub) unknown = tok;
-    break;
-  }
-  return { cmd: cur, unknown };
 }
 
 async function main(argv) {
