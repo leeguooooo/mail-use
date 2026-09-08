@@ -1609,7 +1609,13 @@ async function main(argv) {
           asJson,
           pretty,
           printText: () => {
-            if (result.upgraded) process.stdout.write(`upgraded ${result.from} -> ${result.to} (daemon: ${result.daemon})\n`);
+            if (result.upgraded) {
+              process.stdout.write(`upgraded ${result.from} -> ${result.to}\n`);
+              const d = result.daemon || {};
+              if (!d.was_running) process.stdout.write("  daemon: was not running\n");
+              else if (d.restarted) process.stdout.write("  daemon: restarted on the new binary\n");
+              else process.stdout.write(`  daemon: RESTART FAILED — still on the old binary${d.error ? ` (${d.error})` : ""}\n    fix with: mail-use daemon install\n`);
+            }
             else process.stdout.write(`${result.message || "nothing to do"}\n`);
           },
         });

@@ -118,6 +118,29 @@ function resolveInstalledBinary() {
   return { path: process.execPath, packaged: true };
 }
 
+// A one-shot probe: does a daemon answer on the socket right now?
+function _daemonResponds(binPath) {
+  try {
+    execFileSync(binPath, ["daemon", "status", "--json"], { stdio: "ignore", timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// launchd/systemd reload is asynchronous, so a probe fired immediately after
+// `daemon install` can land in the gap between unload and load.
+function _waitForDaemon(binPath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (_daemonResponds(binPath)) return true;
+    if (Date.now() >= deadline) return false;
+    // Cheap synchronous sleep: this runs at most a handful of times, in a CLI
+    // that is about to exit, and keeps performUpgrade's control flow linear.
+    try { execFileSync("sleep", ["0.5"], { stdio: "ignore" }); } catch { /* ignore */ }
+  }
+}
+
 function sha256(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
@@ -193,13 +216,26 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
 
     // The daemon is still running the previous binary from its open inode, so
     // an upgrade that skips this leaves the old code serving every call.
-    let daemon = "not_running";
-    try {
-      execFileSync(dest, ["daemon", "status", "--json"], { stdio: "ignore", timeout: 10_000 });
-      execFileSync(dest, ["daemon", "install"], { stdio: "ignore", timeout: 30_000 });
-      daemon = "restarted";
-    } catch {
-      daemon = "not_running";
+    //
+    // Probe and restart are reported separately on purpose. Folding them into one
+    // try meant any failure — including a probe that raced the restart — came back
+    // as "not_running", which told the user the daemon was down when it was up and
+    // that nothing was restarted when it had been.
+    const daemon = { was_running: false, restarted: false, error: null };
+    daemon.was_running = _daemonResponds(dest);
+    if (daemon.was_running) {
+      try {
+        execFileSync(dest, ["daemon", "install"], { stdio: "pipe", timeout: 30_000 });
+        // Confirm it actually came back rather than trusting the exit code: a
+        // reload that unloads but fails to load would otherwise read as success.
+        daemon.restarted = _waitForDaemon(dest, 10_000);
+        if (!daemon.restarted) daemon.error = "daemon did not come back after reload";
+      } catch (e) {
+        const stderr = (e && e.stderr && e.stderr.toString().trim()) || "";
+        daemon.error = stderr || (e && e.message) || String(e);
+        // It may still have restarted despite a non-zero exit; report what is true.
+        daemon.restarted = _waitForDaemon(dest, 5_000);
+      }
     }
 
     return {

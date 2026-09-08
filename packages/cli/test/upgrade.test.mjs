@@ -83,3 +83,25 @@ describe("resolveInstalledBinary", () => {
     expect(r.error_code).toBe("operation_failed");
   });
 });
+
+// The daemon report has to be honest. The first version folded the status probe
+// and the reload into one try/catch, so a probe that raced the restart reported
+// `daemon: "not_running"` — telling the user the daemon was down when it was up,
+// and that nothing was restarted when it had been. Seen live upgrading 3.2.0 to
+// 3.3.0: pid changed (so it *had* restarted) while the result said not_running.
+describe("upgrade daemon reporting", () => {
+  it("reports was_running and restarted as separate facts", async () => {
+    const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
+    expect(src).toMatch(/was_running/);
+    expect(src).toMatch(/restarted/);
+    // The two must not be collapsed into one catch-all string again.
+    expect(src).not.toMatch(/daemon = "not_running"/);
+  });
+
+  it("confirms the daemon came back instead of trusting the reload exit code", async () => {
+    const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
+    expect(src).toMatch(/_waitForDaemon/);
+    // A reload that unloads but never loads must not read as success.
+    expect(src).toMatch(/did not come back after reload/);
+  });
+});
