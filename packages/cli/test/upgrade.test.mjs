@@ -98,10 +98,22 @@ describe("upgrade daemon reporting", () => {
     expect(src).not.toMatch(/daemon = "not_running"/);
   });
 
-  it("confirms the daemon came back instead of trusting the reload exit code", async () => {
+  it("confirms the daemon came back instead of trusting the reload's return value", async () => {
     const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
-    expect(src).toMatch(/_waitForDaemon/);
+    expect(src).toMatch(/waitForDaemon/);
     // A reload that unloads but never loads must not read as success.
     expect(src).toMatch(/did not come back after reload/);
+  });
+
+  // A pkg binary cannot usefully spawn itself: pkg puts PKG_EXECPATH in the
+  // environment, the child inherits it and stops behaving like the CLI. That is
+  // why `was_running` was false on a machine where the daemon was plainly up.
+  it("never spawns its own binary — probes the socket and reloads in-process", () => {
+    const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
+    expect(src).not.toMatch(/execFileSync\(\s*dest/);
+    expect(src).not.toMatch(/execFileSync\(\s*binPath/);
+    // tar is the only subprocess left.
+    const spawns = [...src.matchAll(/execFileSync\(\s*"([^"]+)"/g)].map((m) => m[1]);
+    expect(spawns).toEqual(["tar"]);
   });
 });

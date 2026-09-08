@@ -13,6 +13,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const https = require("https");
 const os = require("os");
+const net = require("net");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
@@ -118,26 +119,38 @@ function resolveInstalledBinary() {
   return { path: process.execPath, packaged: true };
 }
 
-// A one-shot probe: does a daemon answer on the socket right now?
-function _daemonResponds(binPath) {
-  try {
-    execFileSync(binPath, ["daemon", "status", "--json"], { stdio: "ignore", timeout: 10_000 });
-    return true;
-  } catch {
-    return false;
-  }
+// Does a daemon answer right now?
+//
+// This connects to the daemon's Unix socket directly instead of shelling out to
+// `<binary> daemon status`. Spawning ourselves does not work from a pkg binary:
+// pkg puts PKG_EXECPATH into the environment, the child inherits it and stops
+// behaving like the CLI, so the probe always failed and every upgrade reported
+// the daemon as not running. Seen live on 3.3.1 — the daemon was demonstrably up
+// (pid 79961) and `was_running` still came back false.
+function daemonResponds() {
+  const { getSocketPath } = require("./daemon");
+  const sockPath = getSocketPath();
+  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const c = net.createConnection(sockPath);
+    // A successful connect is enough: only a live daemon binds this path, and a
+    // stale socket file refuses the connection.
+    c.once("connect", () => { try { c.end(); } catch { /* ignore */ } done(true); });
+    c.once("error", () => done(false));
+    setTimeout(() => { try { c.destroy(); } catch { /* ignore */ } done(false); }, 1000);
+  });
 }
 
-// launchd/systemd reload is asynchronous, so a probe fired immediately after
-// `daemon install` can land in the gap between unload and load.
-function _waitForDaemon(binPath, timeoutMs) {
+// launchd/systemd reload is asynchronous, so a probe fired immediately after the
+// reload can land in the gap between unload and load.
+async function waitForDaemon(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (_daemonResponds(binPath)) return true;
+    if (await daemonResponds()) return true;
     if (Date.now() >= deadline) return false;
-    // Cheap synchronous sleep: this runs at most a handful of times, in a CLI
-    // that is about to exit, and keeps performUpgrade's control flow linear.
-    try { execFileSync("sleep", ["0.5"], { stdio: "ignore" }); } catch { /* ignore */ }
+    await new Promise((r) => { setTimeout(r, 500); });
   }
 }
 
@@ -222,19 +235,23 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
     // as "not_running", which told the user the daemon was down when it was up and
     // that nothing was restarted when it had been.
     const daemon = { was_running: false, restarted: false, error: null };
-    daemon.was_running = _daemonResponds(dest);
+    daemon.was_running = await daemonResponds();
     if (daemon.was_running) {
       try {
-        execFileSync(dest, ["daemon", "install"], { stdio: "pipe", timeout: 30_000 });
-        // Confirm it actually came back rather than trusting the exit code: a
+        // In-process, for the same reason the probe is: this must not spawn the
+        // binary we just replaced. installAutostart only shells out to
+        // launchctl/systemctl, which is fine.
+        const { installAutostart } = require("./daemon");
+        const r = await installAutostart({});
+        if (r && r.success === false) daemon.error = r.error || "reload failed";
+        // Confirm it actually came back rather than trusting the return value: a
         // reload that unloads but fails to load would otherwise read as success.
-        daemon.restarted = _waitForDaemon(dest, 10_000);
-        if (!daemon.restarted) daemon.error = "daemon did not come back after reload";
+        daemon.restarted = await waitForDaemon(10_000);
+        if (!daemon.restarted && !daemon.error) daemon.error = "daemon did not come back after reload";
       } catch (e) {
-        const stderr = (e && e.stderr && e.stderr.toString().trim()) || "";
-        daemon.error = stderr || (e && e.message) || String(e);
-        // It may still have restarted despite a non-zero exit; report what is true.
-        daemon.restarted = _waitForDaemon(dest, 5_000);
+        daemon.error = (e && e.message) || String(e);
+        // It may still have restarted despite the throw; report what is true.
+        daemon.restarted = await waitForDaemon(5_000);
       }
     }
 
