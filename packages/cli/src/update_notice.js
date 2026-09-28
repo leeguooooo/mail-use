@@ -50,7 +50,10 @@ function skippedForArgv(argv = []) {
   if (first === "help") return "version/help";
   // Long-running processes nobody reads stderr from interactively. The daemon
   // already runs its own passive check (MAILBOX_UPDATE_CHECK_HOURS).
-  if (first === "daemon" && second === "run") return "daemon run";
+  // The launchd/systemd unit runs `daemon start` (daemon.js); `run` is the
+  // family-convention name. Either way its stderr is a log nobody reads, and
+  // stamping the cache there would swallow the day's notice for the person.
+  if (first === "daemon" && (second === "run" || second === "start")) return "daemon run";
   if (first === "mcp" && second === "serve") return "mcp serve";
   return "";
 }

@@ -75,6 +75,30 @@ function _gitRoot(dir, run) {
   return r.ok ? r.stdout.trim() : "";
 }
 
+function _realOr(p) {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+function _isWithin(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+// Only a git work tree that belongs to the skill counts as the git channel:
+// either the skill folder is the checkout itself, or the skills link points into
+// a separate checkout (e.g. ~/src/mail-use/skills/mail-use). When the skills
+// directory itself sits inside the repo — a dotfiles repo tracking ~ or
+// ~/.claude, a personal skills repo — `git pull` would move someone else's
+// repository, so treat it as a plain folder instead.
+function _ownedGitRoot(real, skillsDir, run) {
+  const root = _gitRoot(real, run);
+  if (!root) return "";
+  const rootReal = _realOr(root);
+  if (rootReal === _realOr(real)) return root;
+  if (_isWithin(_realOr(skillsDir), rootReal)) return "";
+  return root;
+}
+
 // Returns [{channel, path, update}] — what exists, touching nothing.
 function detectSkills({ home = os.homedir(), run = _run } = {}) {
   const skills = [];
@@ -94,7 +118,7 @@ function detectSkills({ home = os.homedir(), run = _run } = {}) {
     }
     // `npx skills add` links ~/.claude/skills/<n> to ~/.agents/skills/<n>;
     // one install found through two doors is still one install.
-    const root = _gitRoot(real, run);
+    const root = _ownedGitRoot(real, path.join(home, rel), run);
     const key = root || real;
     if (seen.has(key)) continue;
     seen.add(key);

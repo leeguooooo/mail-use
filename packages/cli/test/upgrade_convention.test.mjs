@@ -230,7 +230,7 @@ describe("daily notice: opt-outs", () => {
   });
 
   it("is skipped for upgrade, --version, --help and long-running servers", () => {
-    for (const argv of [["upgrade"], ["upgrade", "--check"], ["--version"], ["-v"], ["email", "list", "--help"], ["-h"], ["help"], ["daemon", "run"], ["mcp", "serve"], []]) {
+    for (const argv of [["upgrade"], ["upgrade", "--check"], ["--version"], ["-v"], ["email", "list", "--help"], ["-h"], ["help"], ["daemon", "run"], ["daemon", "start", "--sync-interval", "300"], ["mcp", "serve"], []]) {
       expect(notice.skippedForArgv(argv), argv.join(" ")).not.toBe("");
     }
     for (const argv of [["email", "list"], ["daemon", "status"], ["mcp", "config"]]) {
@@ -318,6 +318,27 @@ describe("skill refresh", () => {
     const [done] = skills.refreshSkills(found, { run: (cmd, args) => { calls.push([cmd, ...args]); return { ok: true, stdout: "Already up to date.\n" }; } });
     expect(calls).toEqual([["git", "-C", root, "pull", "--ff-only"]]);
     expect(done.status).toBe("updated");
+  });
+
+  it("a skills dir inside someone else's repo (dotfiles tracking ~/.claude) is never pulled", () => {
+    // ~/.claude is a dotfiles checkout; the skill is a plain folder inside it.
+    execFileSync("git", ["init", "-q", path.join(home, ".claude")]);
+    mkSkill(path.join(home, ".claude", "skills", "mail-use"));
+    const found = skills.detectSkills({ home });
+    expect(found).toEqual([{ channel: "copied", path: path.join(home, ".claude", "skills", "mail-use"), update: "npx skills update mail-use" }]);
+    const calls = [];
+    skills.refreshSkills(found, { run: (...a) => { calls.push(a); return { ok: true }; } });
+    expect(calls).toEqual([]);
+  });
+
+  it("a skill folder that is its own git clone is still the git channel", () => {
+    const dir = path.join(home, ".claude", "skills", "mail-use");
+    mkSkill(dir);
+    execFileSync("git", ["init", "-q", dir]);
+    const found = skills.detectSkills({ home });
+    expect(found).toHaveLength(1);
+    expect(found[0].channel).toBe("git");
+    expect(found[0].root).toBe(fs.realpathSync(dir));
   });
 
   it("a pull that cannot fast-forward is reported, not forced", () => {
