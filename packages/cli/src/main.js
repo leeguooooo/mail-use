@@ -654,9 +654,26 @@ function _findCommandPath(program, argv) {
   return { cmd: cur, unknown };
 }
 
+// At most once a day, one stderr line when a newer release exists (see
+// update_notice.js). Never lets a failure reach the command it rides along with.
+async function _dailyUpdateNotice(argv) {
+  // A dev checkout reports package.json's placeholder version, which every
+  // release is "newer" than. Only a stamped binary (or an explicit version
+  // override) has something real to compare.
+  const stamped = process.pkg !== undefined || Boolean(process.env.MAILBOX_CLI_VERSION || process.env.MAILBOX_VERSION);
+  if (!stamped) return;
+  try {
+    await require("./update_notice").maybeNotify({ argv, currentVersion: _resolveCliVersion() });
+  } catch {
+    // ignore
+  }
+}
+
 async function main(argv) {
   const parsed = contract.parseGlobalFlags(argv);
   let asJson = parsed.asJson;
+  // --json typed by the caller, as opposed to JSON implied by a piped stdout.
+  const explicitJson = parsed.asJson;
   const pretty = parsed.pretty;
   const forceText = parsed.forceText;
   const lean = parsed.lean;
@@ -1573,62 +1590,81 @@ async function main(argv) {
       process.exit(rc);
     });
 
-  // upgrade
+  // upgrade — the *-use family convention (plugins docs/upgrade.md):
+  //   upgrade          install the latest release, then refresh the skill
+  //   upgrade --check  change nothing; `mail-use X -> Y` / `mail-use X is up to date`
+  //   upgrade --json   same as --check, as JSON (name/current/latest/update_available/skills)
+  // Exit 0 on success (including "update available"), 2 when the check or the
+  // install failed.
   program
     .command("upgrade")
-    .description("Upgrade the installed binary from the latest GitHub Release")
+    .description("Upgrade the CLI from the latest GitHub Release and refresh the mail-use skill (--check / --json only report)")
     .option("--check", "Only report whether a newer version exists; change nothing")
     .option("--tag <vX.Y.Z>", "Install this exact release instead of the latest (also allows downgrade)")
     .action(async (opts) => {
       const upgrade = require("./upgrade");
+      const skillRefresh = require("./skill_refresh");
       const current = _resolveCliVersion();
+      const failed = (msg) => {
+        contract.handleJsonOrText({
+          result: { success: false, name: upgrade.NAME, error: msg, error_code: contract.inferErrorCode(msg) },
+          asJson,
+          pretty,
+          printText: () => process.stderr.write(`upgrade failed: ${msg}\n`),
+        });
+        process.exit(2);
+      };
       try {
-        if (opts.check) {
+        // An explicit --json means "check, as JSON" (the family contract). JSON
+        // that only comes from stdout being a pipe does not, so a scripted
+        // `mail-use upgrade | cat` still upgrades. --tag always installs.
+        if (opts.check || (explicitJson && !opts.tag)) {
           const result = await upgrade.checkForUpdate(current);
-          const rc = contract.handleJsonOrText({
+          result.skills = skillRefresh.detectSkills();
+          contract.handleJsonOrText({
             result,
             asJson,
             pretty,
             printText: () => {
               process.stdout.write(
                 result.update_available
-                  ? `${result.current} -> ${result.latest} available\n  run: mail-use upgrade\n`
-                  : `${result.current} is the latest\n`
+                  ? `mail-use ${result.current} -> ${result.latest}\n  run: mail-use upgrade\n`
+                  : `mail-use ${result.current} is up to date\n`
               );
+              for (const s of result.skills) process.stdout.write(skillRefresh.formatSkillLine(s) + "\n");
             },
           });
-          process.exit(rc);
+          process.exit(0);
         }
         const result = await upgrade.performUpgrade({
           currentVersion: current,
           targetTag: opts.tag || "",
           log: (m) => { if (!asJson) process.stderr.write(`mail-use upgrade: ${m}\n`); },
         });
-        const rc = contract.handleJsonOrText({
+        if (!result.success) return failed(result.error || "upgrade failed");
+        // Refresh the skill whether or not the binary moved: a current binary
+        // next to a stale SKILL.md is the case this step exists for.
+        result.name = upgrade.NAME;
+        result.skills = skillRefresh.refreshSkills(skillRefresh.detectSkills());
+        contract.handleJsonOrText({
           result,
           asJson,
           pretty,
           printText: () => {
             if (result.upgraded) {
-              process.stdout.write(`upgraded ${result.from} -> ${result.to}\n`);
+              process.stdout.write(`upgraded mail-use ${result.from} -> ${upgrade.bareVersion(result.to)}\n`);
               const d = result.daemon || {};
               if (!d.was_running) process.stdout.write("  daemon: was not running\n");
               else if (d.restarted) process.stdout.write("  daemon: restarted on the new binary\n");
               else process.stdout.write(`  daemon: RESTART FAILED — still on the old binary${d.error ? ` (${d.error})` : ""}\n    fix with: mail-use daemon install\n`);
             }
-            else process.stdout.write(`${result.message || "nothing to do"}\n`);
+            else process.stdout.write(`mail-use ${upgrade.bareVersion(result.current)} is up to date\n`);
+            for (const s of result.skills) process.stdout.write(skillRefresh.formatSkillLine(s) + "\n");
           },
         });
-        process.exit(rc);
+        process.exit(0);
       } catch (e) {
-        const msg = (e && e.message) || String(e);
-        const rc = contract.handleJsonOrText({
-          result: { success: false, error: msg, error_code: contract.inferErrorCode(msg) },
-          asJson,
-          pretty,
-          printText: () => process.stderr.write(`upgrade failed: ${msg}\n`),
-        });
-        process.exit(rc);
+        return failed((e && e.message) || String(e));
       }
     });
 
@@ -1990,6 +2026,8 @@ async function main(argv) {
     contract.handleJsonOrText({ result, asJson, pretty, printText: () => {} });
     return 0;
   }
+
+  await _dailyUpdateNotice(parsed.argv);
 
   try {
     await program.parseAsync(["node", "mail-use", ...parsed.argv]);

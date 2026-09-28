@@ -58,10 +58,24 @@ mail-use --help
 ### 升级
 
 ```bash
-mail-use upgrade --check        # 有没有新版本
-mail-use upgrade                # 下载、校验 sha256、原地替换、重启 daemon
+mail-use upgrade --check        # 有没有新版本（`mail-use 3.3.1 -> 3.3.2`）
+mail-use upgrade --json         # 同样的检查，输出 JSON：name、current、latest、update_available、skills
+mail-use upgrade                # 下载、校验 sha256、原地替换、重启 daemon、刷新 skill
 mail-use upgrade --tag v3.1.0   # 装指定版本（回滚也走这个）
 ```
+
+退出码 `0` 表示命令正常完成（有新版本不算错误），`2` 表示检查或下载失败。
+
+`upgrade` 还会刷新它找到的每一份 mail-use skill：Claude Code 插件（执行
+`claude plugin update mail-use@leeguooooo-plugins`，`claude` 不在 PATH 上就打印出来）、
+链到 `~/.agents/skills`、`~/.claude/skills` 或 `~/.codex/skills` 的 git 检出
+（`git pull --ff-only`，不强推）、`npx skills add` 复制的目录（打印
+`npx skills update mail-use`，由你来跑）。
+
+其他命令每天最多查一次新版本（缓存在 `${XDG_CACHE_HOME:-~/.cache}/mail-use/update-check.json`，
+超时 2 秒，失败不出声），有新版时往 **stderr** 打一行，stdout 的 JSON 不受影响：
+`mail-use 3.3.2 is available (you have 3.3.1). Upgrade: mail-use upgrade`。设置 `CI`、
+`MAIL_USE_NO_UPDATE_CHECK` 或 `USE_NO_UPDATE_CHECK` 任意一个即可关闭。
 
 daemon 在跑的时候会替你留意新版本：每天一次对 GitHub releases API 的匿名 GET
 （`MAILBOX_UPDATE_CHECK_HOURS`，设 `0` 关闭），结果出现在
@@ -205,7 +219,8 @@ session 变多不会让 IMAP 连接变多。macOS 上连着 3 个账号时的实
 | `MAILBOX_POOL_IDLE_MS` | `600000` | 空闲多久回收连接（`0` 关闭回收） |
 | `MAILBOX_POOL_KEEP_WARM` | `1` | 回收时每账号保留几条热连接 |
 | `MAILBOX_NO_DAEMON` | 未设置 | 设为 `1` 让 CLI 完全跳过 daemon |
-| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | daemon 的被动版本检查（`0` 关闭） |
+| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | daemon 的被动版本检查（`0` 同时关闭 CLI 每天的新版提示） |
+| `MAIL_USE_NO_UPDATE_CHECK` / `USE_NO_UPDATE_CHECK` | 未设置 | 设任意值关闭 CLI 每天的新版提示 |
 
 ## AI 集成说明
 
