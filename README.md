@@ -71,10 +71,26 @@ The pre-rename `@leeguoo/mailbox-cli` packages on npm are frozen and no longer u
 ### Upgrading
 
 ```bash
-mail-use upgrade --check     # is there a newer release?
-mail-use upgrade             # download, verify sha256, replace in place, restart the daemon
+mail-use upgrade --check     # is there a newer release? (`mail-use 3.3.1 -> 3.3.2`)
+mail-use upgrade --json      # the same check as JSON: name, current, latest, update_available, skills
+mail-use upgrade             # download, verify sha256, replace in place, restart the daemon, refresh the skill
 mail-use upgrade --tag v3.1.0   # pin an exact release (also the way to roll back)
 ```
+
+Exit code `0` means the command worked (an update being available is not an error); `2`
+means the check or the download failed.
+
+`upgrade` also refreshes every copy of the mail-use skill it finds: a Claude Code plugin
+(`claude plugin update mail-use@leeguooooo-plugins`, or printed if `claude` isn't on PATH),
+a git checkout linked into `~/.agents/skills`, `~/.claude/skills` or `~/.codex/skills`
+(`git pull --ff-only`, never forced), or a copied folder from `npx skills add` (it prints
+`npx skills update mail-use` for you to run).
+
+Any other command checks for a new release at most once a day (cached in
+`${XDG_CACHE_HOME:-~/.cache}/mail-use/update-check.json`, 2 s timeout, failures silent) and,
+when one exists, prints a single line to **stderr** — stdout stays clean JSON:
+`mail-use 3.3.2 is available (you have 3.3.1). Upgrade: mail-use upgrade`. Set `CI`,
+`MAIL_USE_NO_UPDATE_CHECK` or `USE_NO_UPDATE_CHECK` to turn it off.
 
 When the daemon is running it notices new releases for you: one unauthenticated GET to
 the GitHub releases API per day (`MAILBOX_UPDATE_CHECK_HOURS`, `0` disables), surfaced as
@@ -221,7 +237,8 @@ Knobs, if the defaults do not suit you:
 | `MAILBOX_POOL_IDLE_MS` | `600000` | Close connections idle this long (`0` disables reaping) |
 | `MAILBOX_POOL_KEEP_WARM` | `1` | Connections per account kept warm through reaping |
 | `MAILBOX_NO_DAEMON` | unset | `1` makes the CLI skip the daemon entirely |
-| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | Daemon's passive update check (`0` disables) |
+| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | Daemon's passive update check (`0` disables it and the CLI's daily notice) |
+| `MAIL_USE_NO_UPDATE_CHECK` / `USE_NO_UPDATE_CHECK` | unset | Any value turns off the CLI's daily "new version" notice |
 
 ## AI usage guide
 

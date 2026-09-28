@@ -48,11 +48,24 @@ function compareVersions(a, b) {
   return 0;
 }
 
-function _get(url, { json = false, binary = false, redirects = 5 } = {}) {
+// Request headers. GITHUB_TOKEN, when set, only goes to api.github.com: it lifts
+// the 60-requests-an-hour unauthenticated limit for the release lookup, and must
+// not follow a download redirect to a CDN host.
+function _headers(url, json, env = process.env) {
+  const headers = { "User-Agent": "mail-use-upgrade", Accept: json ? "application/vnd.github+json" : "*/*" };
+  const token = String(env.GITHUB_TOKEN || "").trim();
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* ignore */ }
+  if (token && host === "api.github.com") headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+function _get(url, { json = false, binary = false, redirects = 5, timeoutMs = 30_000 } = {}) {
   return new Promise((resolve, reject) => {
+    let timer = null;
     const req = https.get(
       url,
-      { headers: { "User-Agent": "mail-use-upgrade", Accept: json ? "application/vnd.github+json" : "*/*" } },
+      { headers: _headers(url, json) },
       (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           if (redirects <= 0) {
@@ -60,10 +73,12 @@ function _get(url, { json = false, binary = false, redirects = 5 } = {}) {
             return;
           }
           res.resume();
-          resolve(_get(res.headers.location, { json, binary, redirects: redirects - 1 }));
+          clearTimeout(timer);
+          resolve(_get(res.headers.location, { json, binary, redirects: redirects - 1, timeoutMs }));
           return;
         }
         if (res.statusCode !== 200) {
+          clearTimeout(timer);
           res.resume();
           reject(new Error(`HTTP ${res.statusCode} for ${url}`));
           return;
@@ -71,6 +86,7 @@ function _get(url, { json = false, binary = false, redirects = 5 } = {}) {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("end", () => {
+          clearTimeout(timer);
           const buf = Buffer.concat(chunks);
           if (binary) {
             resolve(buf);
@@ -89,22 +105,37 @@ function _get(url, { json = false, binary = false, redirects = 5 } = {}) {
         });
       }
     );
-    req.setTimeout(30_000, () => req.destroy(new Error(`timeout fetching ${url}`)));
-    req.on("error", reject);
+    // A hard deadline for the whole response, not an idle timeout: the daily
+    // notice promises to cost at most `timeoutMs`, and a slow trickle must not
+    // stretch that.
+    timer = setTimeout(() => req.destroy(new Error(`timeout fetching ${url}`)), timeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
+    req.on("error", (e) => { clearTimeout(timer); reject(e); });
   });
 }
 
-async function latestRelease() {
-  const rel = await _get(`https://api.github.com/repos/${REPO}/releases/latest`, { json: true });
+const NAME = "mail-use";
+
+// "v3.3.2" -> "3.3.2". Tags carry the v; the family convention reports bare
+// versions so `current` and `latest` compare by eye.
+function bareVersion(v) {
+  return String(v || "").trim().replace(/^v/i, "");
+}
+
+// /releases/latest already skips drafts and prereleases.
+async function latestRelease({ timeoutMs } = {}) {
+  const rel = await _get(`https://api.github.com/repos/${REPO}/releases/latest`, { json: true, timeoutMs });
   return { tag: String(rel.tag_name || ""), url: String(rel.html_url || ""), published_at: rel.published_at || "" };
 }
 
-async function checkForUpdate(currentVersion) {
-  const latest = await latestRelease();
+async function checkForUpdate(currentVersion, { fetchLatest = latestRelease, timeoutMs } = {}) {
+  const latest = await fetchLatest({ timeoutMs });
   const cmp = compareVersions(latest.tag, currentVersion);
   return {
-    current: String(currentVersion || ""),
-    latest: latest.tag,
+    name: NAME,
+    current: bareVersion(currentVersion),
+    latest: bareVersion(latest.tag),
+    tag: latest.tag,
     update_available: cmp > 0,
     release_url: latest.url,
     published_at: latest.published_at,
@@ -270,4 +301,4 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
   }
 }
 
-module.exports = { assetTarget, compareVersions, checkForUpdate, latestRelease, performUpgrade, resolveInstalledBinary };
+module.exports = { NAME, assetTarget, bareVersion, compareVersions, checkForUpdate, latestRelease, performUpgrade, resolveInstalledBinary, _headers };
