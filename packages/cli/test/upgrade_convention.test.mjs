@@ -242,6 +242,9 @@ describe("daily notice: opt-outs", () => {
 describe("daily notice through the real CLI: stderr only", () => {
   const cli = path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 
+  // A copy of the runner's env minus every notice opt-out (GitHub Actions sets
+  // CI=true). Passed with extendEnv:false — execa otherwise merges process.env
+  // back in and CI returns.
   function cliEnv(extra = {}) {
     const e = { ...process.env };
     for (const k of ["CI", "MAIL_USE_NO_UPDATE_CHECK", "USE_NO_UPDATE_CHECK", "MAILBOX_INTERNAL_TEST_MODE", "MAILBOX_UPDATE_CHECK_HOURS"]) delete e[k];
@@ -263,7 +266,7 @@ describe("daily notice through the real CLI: stderr only", () => {
   });
 
   it("stdout stays parseable JSON; the notice is the only stderr line", async () => {
-    const r = await execa("node", [cli, "mcp", "config", "--json"], { env: cliEnv(), reject: false });
+    const r = await execa("node", [cli, "mcp", "config", "--json"], { env: cliEnv(), extendEnv: false, reject: false });
     expect(r.exitCode).toBe(0);
     expect(JSON.parse(r.stdout).success).toBe(true);
     expect(r.stdout).not.toMatch(/is available/);
@@ -271,12 +274,18 @@ describe("daily notice through the real CLI: stderr only", () => {
   });
 
   it("MAIL_USE_NO_UPDATE_CHECK silences it", async () => {
-    const r = await execa("node", [cli, "mcp", "config", "--json"], { env: cliEnv({ MAIL_USE_NO_UPDATE_CHECK: "1" }), reject: false });
+    const r = await execa("node", [cli, "mcp", "config", "--json"], { env: cliEnv({ MAIL_USE_NO_UPDATE_CHECK: "1" }), extendEnv: false, reject: false });
+    expect(r.stderr).toBe("");
+  });
+
+  it("CI=1 silences it", async () => {
+    const r = await execa("node", [cli, "mcp", "config", "--json"], { env: cliEnv({ CI: "1" }), extendEnv: false, reject: false });
+    expect(r.exitCode).toBe(0);
     expect(r.stderr).toBe("");
   });
 
   it("--version prints just the version", async () => {
-    const r = await execa("node", [cli, "--version"], { env: cliEnv(), reject: false });
+    const r = await execa("node", [cli, "--version"], { env: cliEnv(), extendEnv: false, reject: false });
     expect(r.stdout.trim()).toBe("3.3.0");
     expect(r.stderr).toBe("");
   });
