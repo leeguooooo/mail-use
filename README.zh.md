@@ -271,3 +271,7 @@ OpenClaw 负责渠道投递与定时调度；mail-use 只输出结构化 JSON �
 openclaw skills list --eligible
 openclaw skills check
 ```
+
+## 作者
+
+**郭立（Guo Li / leeguoo）** 开发 —— [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · 更多工具见 [*-use 家族](https://github.com/leeguooooo/plugins)。
