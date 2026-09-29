@@ -150,6 +150,111 @@ function resolveInstalledBinary() {
   return { path: process.execPath, packaged: true };
 }
 
+const INSTALL_URL = `https://raw.githubusercontent.com/${REPO}/main/install.sh`;
+
+function _realOr(p) {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+// Nearest directory at or above `dir` that holds a .git entry. Read-only file
+// checks, no git subprocess: this runs on every `upgrade`, including --check.
+function _gitRootAbove(dir) {
+  let cur = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(cur, ".git"))) return cur;
+    const up = path.dirname(cur);
+    if (up === cur) return "";
+    cur = up;
+  }
+}
+
+// How this copy of mail-use was installed, and so who may replace it.
+//
+//   release  the pkg binary from a GitHub Release (install.sh / `upgrade`) —
+//            the only channel `upgrade` rewrites
+//   brew     a binary under a Homebrew Cellar/prefix: brew owns that file
+//   npm      the JS entry run by node from a node_modules tree (npm -g, npx)
+//   source   the JS entry run by node from a git checkout
+//   unknown  node running the entry from anywhere else
+//
+// Everything but `release` is refused with the manager's own command: an
+// upgrade that overwrote a brew- or npm-owned file would be undone (or worse,
+// half-undone) by that manager's next run.
+function detectInstallChannel({
+  packaged = typeof process.pkg !== "undefined",
+  execPath = process.execPath,
+  entry = process.argv[1] || "",
+} = {}) {
+  if (packaged) {
+    const bin = _realOr(execPath);
+    if (/\/Cellar\//.test(bin) || /^\/(opt\/homebrew|home\/linuxbrew\/\.linuxbrew)\//.test(bin)) {
+      return { channel: "brew", path: bin, upgradable: false, hint: "installed with Homebrew; run: brew upgrade mail-use" };
+    }
+    return { channel: "release", path: bin, upgradable: true, hint: "" };
+  }
+  const script = entry ? _realOr(entry) : "";
+  if (script && script.split(path.sep).includes("node_modules")) {
+    return {
+      channel: "npm",
+      path: script,
+      upgradable: false,
+      hint: `running from an npm install; update it with npm, or switch to the release binary: curl -fsSL ${INSTALL_URL} | sh`,
+    };
+  }
+  const root = script ? _gitRootAbove(path.dirname(script)) : "";
+  if (root) {
+    return {
+      channel: "source",
+      path: root,
+      upgradable: false,
+      hint: `running from a source checkout; run: git -C ${root} pull --ff-only && pnpm -C ${root} install`,
+    };
+  }
+  return {
+    channel: "unknown",
+    path: script || execPath,
+    upgradable: false,
+    hint: `not a release binary; install one with: curl -fsSL ${INSTALL_URL} | sh`,
+  };
+}
+
+// Environment for running a downloaded pkg binary from inside this pkg binary.
+// pkg marks its own process with PKG_* variables; a child that inherits them
+// stops acting as the CLI (it treats argv as a script to run), so they go.
+function childEnv(env = process.env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!k.startsWith("PKG_")) out[k] = v;
+  }
+  // The version override would make any binary "pass" the check below.
+  delete out.MAILBOX_CLI_VERSION;
+  delete out.MAILBOX_VERSION;
+  return out;
+}
+
+// The extracted binary must run and report the version we meant to install
+// before it is allowed anywhere near the installed path.
+function verifyBinary(file, wantTag) {
+  let out = "";
+  try {
+    out = execFileSync(file, ["--version"], {
+      env: { ...childEnv(), MAIL_USE_NO_UPDATE_CHECK: "1", MAILBOX_NO_DAEMON: "1" },
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    return { ok: false, error: `downloaded binary does not run (${(e && e.message ? e.message : String(e)).split("\n")[0]})` };
+  }
+  const got = bareVersion(out.trim().split(/\s+/).pop());
+  // Exact match: compareVersions drops "-rc1"-style suffixes, which must not
+  // let a prerelease binary pass for the release it was asked to install.
+  if (got !== bareVersion(wantTag)) {
+    return { ok: false, error: `downloaded binary reports ${got || "no version"}, expected ${bareVersion(wantTag)}` };
+  }
+  return { ok: true, version: got };
+}
+
 // Does a daemon answer right now?
 //
 // This connects to the daemon's Unix socket directly instead of shelling out to
@@ -189,52 +294,74 @@ function sha256(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-async function performUpgrade({ currentVersion, targetTag = "", log = () => {} } = {}) {
-  const target = assetTarget();
+// Installs a release over the running binary. Every failure before the final
+// rename leaves the installed binary exactly as it was.
+//
+// `deps` exists for tests: the http getter, the install channel, the binary
+// check and the daemon probe can be swapped so the whole path runs offline
+// against a temp directory.
+async function performUpgrade({ currentVersion, targetTag = "", log = () => {}, deps = {} } = {}) {
+  const get = deps.get || _get;
+  const channel = deps.channel || detectInstallChannel();
+  const verify = deps.verifyBinary || verifyBinary;
+  const probeDaemon = deps.daemonResponds || daemonResponds;
+  const target = deps.target !== undefined ? deps.target : assetTarget();
   if (!target) {
     return { success: false, error: `unsupported platform: ${process.platform} ${process.arch}`, error_code: "invalid_argument" };
   }
-  const bin = resolveInstalledBinary();
-  if (!bin.packaged) {
+  if (!channel.upgradable) {
+    // Refused, not failed: nothing was downloaded or touched, and the manager
+    // that owns this install has its own command.
     return {
       success: false,
-      error: "not running from an installed binary (dev checkout) — nothing to upgrade",
+      refused: true,
+      error: channel.hint,
       error_code: "operation_failed",
+      install_channel: channel,
     };
   }
 
   const info = targetTag
     ? { tag: targetTag, url: `https://github.com/${REPO}/releases/tag/${targetTag}`, published_at: "" }
-    : await latestRelease();
+    : await (deps.latestRelease || latestRelease)();
   if (!targetTag && compareVersions(info.tag, currentVersion) <= 0) {
-    return { success: true, upgraded: false, current: currentVersion, latest: info.tag, message: "already up to date" };
+    return { success: true, upgraded: false, current: currentVersion, latest: info.tag, message: "already up to date", install_channel: channel };
   }
 
   const base = `https://github.com/${REPO}/releases/download/${info.tag}`;
   const assetName = `mail-use-${target}.tar.gz`;
   log(`downloading ${info.tag} (${assetName})`);
-  const tarball = await _get(`${base}/${assetName}`, { binary: true });
+  const tarball = await get(`${base}/${assetName}`, { binary: true });
 
-  // Verify against the published checksum. A mismatch means the bytes are not
-  // what was released — refuse rather than install them.
-  let checksumState = "missing";
+  // The published checksum is required. A release without one, or bytes that
+  // do not match it, are refused rather than installed.
+  let sums;
   try {
-    const sums = await _get(`${base}/${assetName}.sha256`);
-    const expected = String(sums).trim().split(/\s+/)[0];
-    const actual = sha256(tarball);
-    if (expected && expected !== actual) {
-      return {
-        success: false,
-        error: `checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`,
-        error_code: "operation_failed",
-      };
-    }
-    checksumState = expected ? "verified" : "missing";
-  } catch {
-    checksumState = "missing";
+    sums = await get(`${base}/${assetName}.sha256`);
+  } catch (e) {
+    return {
+      success: false,
+      error: `no checksum for ${assetName} (${(e && e.message) || e}); refusing to install unverified bytes`,
+      error_code: "operation_failed",
+    };
   }
+  const expected = String(sums || "").trim().split(/\s+/)[0].toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected)) {
+    return { success: false, error: `invalid checksum file for ${assetName}`, error_code: "operation_failed" };
+  }
+  const actual = sha256(tarball);
+  if (expected !== actual) {
+    return {
+      success: false,
+      error: `checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`,
+      error_code: "operation_failed",
+    };
+  }
+  log("checksum ok");
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mail-use-upgrade-"));
+  const dest = channel.path;
+  const staged = path.join(path.dirname(dest), `.mail-use.upgrade.${process.pid}`);
   try {
     const tarPath = path.join(tmp, assetName);
     fs.writeFileSync(tarPath, tarball);
@@ -245,17 +372,32 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
       if (fs.existsSync(legacy)) extracted = legacy;
       else return { success: false, error: "archive did not contain a mail-use binary", error_code: "operation_failed" };
     }
+    if (fs.lstatSync(extracted).isSymbolicLink() || !fs.statSync(extracted).isFile()) {
+      return { success: false, error: "archive's mail-use is not a regular file", error_code: "operation_failed" };
+    }
     fs.chmodSync(extracted, 0o755);
 
-    // Replace via rename within the same directory: rename is atomic, and on
-    // POSIX it is legal to replace a running executable's path — the old inode
-    // stays alive for already-running processes (notably the daemon, which we
-    // restart below).
-    const dest = bin.path;
-    const staged = path.join(path.dirname(dest), `.mail-use.upgrade.${process.pid}`);
-    fs.copyFileSync(extracted, staged);
-    fs.chmodSync(staged, 0o755);
-    fs.renameSync(staged, dest);
+    const v = verify(extracted, info.tag);
+    if (!v.ok) return { success: false, error: v.error, error_code: "operation_failed" };
+    log(`verified ${bareVersion(info.tag)}`);
+
+    // Stage in the destination directory, then rename over it: rename is
+    // atomic, so the path holds either the old binary or the whole new one.
+    // On POSIX replacing a running executable's path is legal — the old inode
+    // lives on for already-running processes (notably the daemon, restarted
+    // below).
+    try {
+      fs.copyFileSync(extracted, staged);
+      fs.chmodSync(staged, 0o755);
+      fs.renameSync(staged, dest);
+    } catch (e) {
+      try { fs.rmSync(staged, { force: true }); } catch { /* ignore */ }
+      return {
+        success: false,
+        error: `could not replace ${dest} (${(e && e.message) || e}); the installed binary is unchanged`,
+        error_code: "operation_failed",
+      };
+    }
     log(`installed ${info.tag} to ${dest}`);
 
     // The daemon is still running the previous binary from its open inode, so
@@ -266,7 +408,7 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
     // as "not_running", which told the user the daemon was down when it was up and
     // that nothing was restarted when it had been.
     const daemon = { was_running: false, restarted: false, error: null };
-    daemon.was_running = await daemonResponds();
+    daemon.was_running = await probeDaemon();
     if (daemon.was_running) {
       try {
         // In-process, for the same reason the probe is: this must not spawn the
@@ -292,7 +434,8 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
       from: String(currentVersion || ""),
       to: info.tag,
       binary: dest,
-      checksum: checksumState,
+      checksum: "verified",
+      install_channel: channel,
       daemon,
       release_url: info.url,
     };
@@ -301,4 +444,19 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
   }
 }
 
-module.exports = { NAME, assetTarget, bareVersion, compareVersions, checkForUpdate, latestRelease, performUpgrade, resolveInstalledBinary, _headers };
+module.exports = {
+  NAME,
+  INSTALL_URL,
+  assetTarget,
+  bareVersion,
+  childEnv,
+  compareVersions,
+  checkForUpdate,
+  detectInstallChannel,
+  latestRelease,
+  performUpgrade,
+  resolveInstalledBinary,
+  sha256,
+  verifyBinary,
+  _headers,
+};

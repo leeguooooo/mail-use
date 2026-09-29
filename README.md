@@ -72,15 +72,19 @@ The pre-rename `@leeguoo/mailbox-cli` packages on npm are frozen and no longer u
 
 ```bash
 mail-use upgrade --check     # is there a newer release? (`mail-use 3.3.1 -> 3.3.2`)
-mail-use upgrade --json      # the same check as JSON: name, current, latest, update_available, skills
-mail-use upgrade             # download, verify sha256, replace in place, restart the daemon, refresh the skill
+mail-use upgrade --json      # the same check as JSON: name, current, latest, update_available, skills, install_channel
+mail-use upgrade             # CLI only: download, verify sha256, check the new binary's version, swap atomically, restart the daemon
+mail-use upgrade --skills    # the same, then refresh this tool's own skill copies (skill-only when the CLI is current)
 mail-use upgrade --tag v3.1.0   # pin an exact release (also the way to roll back)
 ```
 
 Exit code `0` means the command worked (an update being available is not an error); `2`
-means the check or the download failed.
+means the check, the download or the verification failed (the installed binary is left
+as it was); `1` means it refused because Homebrew, npm or a source checkout owns this
+install (it prints that manager's command instead), or a skill could not be refreshed.
 
-`upgrade` also refreshes every copy of the mail-use skill it finds: a Claude Code plugin
+A plain `upgrade` only lists the skill copies it finds, with the command that would refresh
+each. `upgrade --skills` refreshes them: a Claude Code plugin
 (`claude plugin update mail-use@leeguooooo-plugins`, or printed if `claude` isn't on PATH),
 a git checkout linked into `~/.agents/skills`, `~/.claude/skills` or `~/.codex/skills`
 (`git pull --ff-only`, never forced), or a copied folder from `npx skills add` (it prints
@@ -99,8 +103,9 @@ or installs anything.
 
 `upgrade` is never automatic and never runs on its own: a tool that silently replaces
 its own executable is a supply-chain surprise, not a convenience. It refuses to install
-a tarball whose published `.sha256` doesn't match, and refuses to run at all from a dev
-checkout (where `process.execPath` is your `node`). Re-running the `curl … install.sh | sh`
+a tarball whose published `.sha256` is missing or doesn't match, or whose binary does not
+report the requested version, and refuses to run at all from a Homebrew, npm or dev-checkout
+install. Re-running the `curl … install.sh | sh`
 line does the same job.
 
 ### As an AI Skill (Claude Code / Cursor / etc.)

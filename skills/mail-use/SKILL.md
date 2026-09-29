@@ -301,8 +301,10 @@ Measured (Gmail INBOX, M2 MacBook over residential WAN):
 ## Upgrade
 
 When any `mail-use` command prints `mail-use X is available`, tell the user and offer to run
-`mail-use upgrade` (it updates the CLI and this skill). Check without changing anything:
-`mail-use upgrade --check` (or `--json`). The user may also just say "升级 mail-use" / "upgrade mail-use".
+`mail-use upgrade` (CLI only; add `--skills` to also refresh this skill, `--tag vX.Y.Z` to pin
+a release). Check without changing anything: `mail-use upgrade --check` (or `--json`). The user
+may also just say "升级 mail-use" / "upgrade mail-use". Exit 1 with a `brew`/`npm`/`git` command
+means another manager owns this install: relay that command instead of retrying.
 
 If the skill came from somewhere `upgrade` can't refresh:
 - Claude Code plugin: `claude plugin update mail-use@leeguooooo-plugins`

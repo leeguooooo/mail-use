@@ -59,30 +59,35 @@ if ! curl -fSL --retry 3 -o "$tmp/$asset" "$url"; then
   url="${base}/${legacy_asset}"
 fi
 
-# Optional checksum verification when the .sha256 sidecar is present.
-if curl -fsSL --retry 2 -o "$tmp/$asset.sha256" "${url}.sha256" 2>/dev/null; then
-  expected="$(awk '{print $1}' "$tmp/$asset.sha256")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
-  elif command -v shasum >/dev/null 2>&1; then
-    actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
-  else
-    actual=""
-  fi
-  if [ -n "$actual" ] && [ "$expected" != "$actual" ]; then
-    err "checksum mismatch (expected $expected, got $actual)"
-  fi
-  [ -n "$actual" ] && printf 'mail-use-install: checksum ok\n'
+# The published .sha256 sidecar is required: a missing checksum is a failed
+# install, never permission to skip verification.
+curl -fsSL --retry 2 -o "$tmp/$asset.sha256" "${url}.sha256" \
+  || err "checksum download failed (${url}.sha256); refusing to install unverified bytes"
+expected="$(awk 'NR == 1 {print $1}' "$tmp/$asset.sha256")"
+[ "${#expected}" -eq 64 ] || err "invalid checksum file"
+case "$expected" in *[!0-9a-fA-F]*) err "invalid checksum file" ;; esac
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
+else
+  err "need sha256sum or shasum to verify the download"
 fi
+[ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" = "$actual" ] \
+  || err "checksum mismatch (expected $expected, got $actual)"
+printf 'mail-use-install: checksum ok\n'
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 # Legacy archives contain a binary named "mailbox".
 [ -f "$tmp/mail-use" ] || [ ! -f "$tmp/mailbox" ] || mv "$tmp/mailbox" "$tmp/mail-use"
-[ -f "$tmp/mail-use" ] || err "archive did not contain a 'mail-use' binary"
+[ -f "$tmp/mail-use" ] && [ ! -L "$tmp/mail-use" ] || err "archive did not contain a 'mail-use' binary"
 
 mkdir -p "$INSTALL_DIR"
-mv "$tmp/mail-use" "$INSTALL_DIR/mail-use"
-chmod +x "$INSTALL_DIR/mail-use"
+# Stage next to the target, then rename over it: the swap is atomic, a failed
+# copy never leaves a half-written binary, and a running daemon keeps its inode.
+staged="$INSTALL_DIR/.mail-use.install.$$"
+install -m 0755 "$tmp/mail-use" "$staged" || { rm -f "$staged"; err "could not write to $INSTALL_DIR"; }
+mv -f "$staged" "$INSTALL_DIR/mail-use" || { rm -f "$staged"; err "could not replace $INSTALL_DIR/mail-use"; }
 
 # Keep the old command name working for anyone with `mailbox ...` in scripts/skills.
 ln -sf "$INSTALL_DIR/mail-use" "$INSTALL_DIR/mailbox" 2>/dev/null || true
