@@ -76,10 +76,13 @@ describe("resolveInstalledBinary", () => {
     expect(r.path).toBe("");
   });
 
-  it("performUpgrade bails out in a dev checkout instead of clobbering node", async () => {
+  it("performUpgrade refuses in a dev checkout instead of clobbering node", async () => {
     const r = await upgrade.performUpgrade({ currentVersion: "0.0.1" });
     expect(r.success).toBe(false);
-    expect(r.error).toMatch(/dev checkout/);
+    expect(r.refused).toBe(true);
+    // Under vitest the entry script is vitest's own (in node_modules).
+    expect(["npm", "source"]).toContain(r.install_channel.channel);
+    expect(r.install_channel.upgradable).toBe(false);
     expect(r.error_code).toBe("operation_failed");
   });
 });
@@ -112,7 +115,10 @@ describe("upgrade daemon reporting", () => {
     const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
     expect(src).not.toMatch(/execFileSync\(\s*dest/);
     expect(src).not.toMatch(/execFileSync\(\s*binPath/);
-    // tar is the only subprocess left.
+    // The only other spawn is the *downloaded* binary's --version check
+    // (verifyBinary), run with pkg's PKG_* variables stripped.
+    expect(src).toMatch(/execFileSync\(file, \["--version"\]/);
+    // tar is the only named subprocess.
     const spawns = [...src.matchAll(/execFileSync\(\s*"([^"]+)"/g)].map((m) => m[1]);
     expect(spawns).toEqual(["tar"]);
   });

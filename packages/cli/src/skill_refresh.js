@@ -26,7 +26,14 @@ const NAME = "mail-use";
 const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills"];
 
 function _run(cmd, args, { timeoutMs = 120_000 } = {}) {
-  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
+  // GIT_TERMINAL_PROMPT=0: a private remote with no credential helper fails
+  // instead of hanging on a prompt nobody sees.
+  const r = spawnSync(cmd, args, {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
   return {
     ok: r.status === 0 && !r.error,
     status: r.status,
@@ -135,7 +142,8 @@ function _firstLine(s) {
   return String(s || "").trim().split("\n").filter(Boolean).pop() || "";
 }
 
-// Acts on detectSkills() output. Each entry gains `status`:
+// Acts on detectSkills() output — only with `upgrade --skills`; a plain
+// `upgrade` marks them `skipped`. Each entry gains `status`:
 //   updated | failed (with `error`) | manual (run `update` yourself)
 function refreshSkills(skills, { run = _run, which = _which } = {}) {
   return skills.map((s) => {
@@ -156,9 +164,10 @@ function refreshSkills(skills, { run = _run, which = _which } = {}) {
 }
 
 function formatSkillLine(s) {
-  const head = `  skill (${s.channel}) ${s.path}`;
+  const head = `skill (${s.channel}) ${s.path}`;
   if (!s.status) return `${head}\n    update: ${s.update}`;
-  if (s.status === "updated") return `${head}: updated`;
+  if (s.status === "skipped") return `${head}: not refreshed; pass --skills or run: ${s.update}`;
+  if (s.status === "updated") return s.channel === "claude-plugin" ? `${head}: updated (${s.update}); restart Claude Code or /reload-plugins to load it` : `${head}: updated`;
   if (s.status === "failed") return `${head}: refresh failed (${s.error})\n    run: ${s.update}`;
   return `${head}: run ${s.update}${s.reason ? ` (${s.reason})` : ""}`;
 }
