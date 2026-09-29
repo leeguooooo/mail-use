@@ -26,6 +26,8 @@ Flow:
 
 If no release-worthy commits are found, semantic-release exits without tagging.
 
+`scripts/release.sh` (`--dry-run` to preview) runs lint + tests, pushes `main`, waits for both workflows, then syncs the plugin marketplace.
+
 ## Manual release (fallback)
 
 ```bash
