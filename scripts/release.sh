@@ -4,6 +4,11 @@
 # plugin marketplace so Claude Code plugin installs pick the new version up right away (uses your `gh` login).
 #   scripts/release.sh [--dry-run]
 set -eu
+run_ok() {  # run_ok <run-id> [-R owner/repo]: wait until the run completes (gh run watch can drop on a network error), then require success
+  _r=$1; shift
+  until [ "$(gh run view "$_r" "$@" --json status -q .status 2>/dev/null)" = completed ]; do gh run watch "$_r" "$@" >/dev/null 2>&1 || sleep 15; done
+  [ "$(gh run view "$_r" "$@" --json conclusion -q .conclusion)" = success ]
+}
 DRY=
 [ "${1:-}" = --dry-run ] && DRY=1
 REPO=leeguooooo/mail-use
@@ -30,7 +35,7 @@ wait_run() {
   until RUN=$(gh run list -R "$REPO" -w "$wf" "$@" -L 1 --json databaseId -q '.[0].databaseId') && [ -n "$RUN" ]; do
     i=$((i + 1)); [ "$i" -lt 60 ] || { echo "error: no $wf run appeared" >&2; exit 1; }; sleep 5
   done
-  gh run watch "$RUN" -R "$REPO" --exit-status >/dev/null || { echo "error: $wf run $RUN failed" >&2; exit 1; }
+  run_ok "$RUN" -R "$REPO" || { echo "error: $wf run $RUN failed" >&2; exit 1; }
 }
 wait_run semantic-release.yml -c "$SHA"
 git fetch -q --tags
@@ -44,6 +49,6 @@ echo "released $TAG with $(gh release view "$TAG" -R "$REPO" --json assets -q '.
 gh workflow run auto-sync-versions.yml -R "$MARKETPLACE"
 sleep 5
 RUN=$(gh run list -R "$MARKETPLACE" -w auto-sync-versions.yml -e workflow_dispatch -L 1 --json databaseId -q '.[0].databaseId')
-gh run watch "$RUN" -R "$MARKETPLACE" --exit-status >/dev/null && echo "marketplace synced" || echo "warn: marketplace sync run $RUN failed; the hourly run will retry"
+run_ok "$RUN" -R "$MARKETPLACE" && echo "marketplace synced" || echo "warn: marketplace sync run $RUN failed; the hourly run will retry"
 gh api "repos/$MARKETPLACE/contents/.claude-plugin/marketplace.json" -q .content | base64 -d \
   | python3 -c "import json,sys; print('marketplace mail-use:', next(p['version'] for p in json.load(sys.stdin)['plugins'] if p['name']=='mail-use'))"
