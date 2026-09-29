@@ -247,7 +247,9 @@ function verifyBinary(file, wantTag) {
     return { ok: false, error: `downloaded binary does not run (${(e && e.message ? e.message : String(e)).split("\n")[0]})` };
   }
   const got = bareVersion(out.trim().split(/\s+/).pop());
-  if (compareVersions(got, wantTag) !== 0) {
+  // Exact match: compareVersions drops "-rc1"-style suffixes, which must not
+  // let a prerelease binary pass for the release it was asked to install.
+  if (got !== bareVersion(wantTag)) {
     return { ok: false, error: `downloaded binary reports ${got || "no version"}, expected ${bareVersion(wantTag)}` };
   }
   return { ok: true, version: got };

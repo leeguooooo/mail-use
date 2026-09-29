@@ -134,6 +134,14 @@ describe("verify before swap, then an atomic rename", () => {
     expect(fs.readFileSync(bin, "utf8")).toBe(OLD);
   });
 
+  it("a prerelease binary does not pass for the release (exact version match)", async () => {
+    const tarball = makeTarball("3.4.0-rc1");
+    const { bin, deps } = setup({ tarball, sums: sha(tarball) });
+    const r = await upgrade.performUpgrade({ currentVersion: "3.3.0", deps });
+    expect(r.error).toMatch(/reports 3\.4\.0-rc1, expected 3\.4\.0/);
+    expect(fs.readFileSync(bin, "utf8")).toBe(OLD);
+  });
+
   it("a binary that does not run is refused", async () => {
     const src = path.join(tmp, "broken");
     fs.mkdirSync(src);
