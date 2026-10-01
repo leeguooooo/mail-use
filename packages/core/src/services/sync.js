@@ -93,7 +93,8 @@ function _bigToString(v) {
 //
 // Incremental when the last pass recorded UIDVALIDITY + UIDNEXT, the server's
 // UIDVALIDITY still matches, and the cache holds rows for the folder:
-//   - envelopes are fetched only for UIDs >= the stored UIDNEXT (new mail);
+//   - envelopes are fetched only for UIDs in the newest window that the
+//     cache lacks (new mail, or older mail that slid in after an expunge);
 //   - flags of already-cached UIDs are refreshed with CHANGEDSINCE when the
 //     server does CONDSTORE (and skipped entirely when HIGHESTMODSEQ hasn't
 //     moved), else with a flags-only FETCH — a few bytes per message instead
@@ -127,8 +128,12 @@ async function _scanFolder(account, folder, prev, { full }) {
     const incremental = !full && !validityChanged && Boolean(prev.uidValidity) && uidValidity === prev.uidValidity
       && prev.uidNext > 0 && prev.cachedUids.length > 0;
 
+    // Incremental: whatever in the newest-SYNC_WINDOW window isn't cached yet.
+    // That is new mail, plus older mail that slid into the window after
+    // something newer was expunged.
+    const cachedSet = new Set(prev.cachedUids.map(Number));
     const toFetch = incremental
-      ? serverUids.filter((u) => u >= prev.uidNext).slice(0, SYNC_WINDOW)
+      ? serverUids.slice(0, SYNC_WINDOW).filter((u) => !cachedSet.has(u))
       : serverUids.slice(0, SYNC_WINDOW);
 
     const newEmails = [];

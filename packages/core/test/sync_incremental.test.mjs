@@ -98,6 +98,21 @@ describe("C13: incremental sync", () => {
     expect((await cachedRows()).map((e) => e.uid).sort()).toEqual(["101", "103"]);
   });
 
+  it("refills the newest window when an expunge lets an older message slide in", async () => {
+    const mb = getMailbox("mock_acc", "INBOX");
+    for (let u = 104; u <= 305; u++) mb.messages.push(msg(u)); // 205 messages, window is 200
+    await sync.force({ account_id: "mock_acc" });
+    expect((await cachedRows()).map((e) => Number(e.uid))).not.toContain(105);
+
+    mb.messages = mb.messages.filter((m) => m.uid !== 305);
+    clearMockCalls();
+    const r = await sync.force({ account_id: "mock_acc" });
+    expect(r.mode).toBe("incremental");
+    expect(envelopeFetches()).toHaveLength(1);
+    expect(envelopeFetches()[0].range).toBe("105");
+    expect((await cachedRows()).map((e) => Number(e.uid))).toContain(105);
+  });
+
   it("a UIDVALIDITY change wipes the folder's cache and resyncs in full", async () => {
     await sync.force({ account_id: "mock_acc" });
     const mb = getMailbox("mock_acc", "INBOX");
