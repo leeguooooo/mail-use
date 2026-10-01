@@ -3,6 +3,7 @@
 // a bounded partial fetch for previews.
 
 const { _uidSetString } = require("./internals");
+const { _htmlToText } = require("./body");
 
 // Hard caps to defend against hostile mail. Override via env if needed.
 const MAX_MESSAGE_BYTES = Number(process.env.MAILBOX_MAX_MESSAGE_BYTES || 50 * 1024 * 1024); // 50 MiB
@@ -124,7 +125,9 @@ async function _loadParsedMessage(client, uid, notFoundLabel = uid) {
 async function _previewFromSource(source, previewChars) {
   try {
     const parsed = await _safeParse(source);
-    const txt = String(parsed.text || "").replace(/\s+/g, " ").trim();
+    // HTML-only mail has no text part; derive one the way `show` does.
+    let txt = String(parsed.text || "").replace(/\s+/g, " ").trim();
+    if (!txt && parsed.html) txt = _htmlToText(parsed.html).replace(/\s+/g, " ").trim();
     const out = { preview: txt.slice(0, previewChars) };
     if (txt.length > previewChars) out.preview_truncated = true;
     return out;
