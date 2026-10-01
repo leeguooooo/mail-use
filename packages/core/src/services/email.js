@@ -7,10 +7,11 @@ const { _dateOnly, _isoDate, _expandRelativeDate, _parseDateInput } = require(".
 const { _deadlineExceeded, _raceTimeout } = require("./email/deadline");
 const {
   _normalizeFolder, _gid, _listMailboxes, _selectableFoldersFor,
-  _uidsSortedDesc, _compareDatesDesc,
+  _uidsSortedDesc, _compareDatesDesc, _mapLimit, ACCOUNT_CONCURRENCY,
 } = require("./email/internals");
 const { _trashFolderCandidates, _findTrashFolder, _existingUids } = require("./email/trash");
 const { _runBatched, _parseUidList } = require("./email/batch");
+const { _envelopeItem } = require("./email/items");
 const {
   MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_TOTAL, PREVIEW_SOURCE_QUERY,
   _safeParse, _fetchFullMessages, _loadParsedMessage, _previewFromSource,
@@ -124,24 +125,7 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
       },
       { uid: true }
     )) {
-      const env = msg.envelope || {};
-      const flags = msg.flags || new Set([]);
-      const unread = !flags.has("\\Seen");
-      const item = {
-        id: String(msg.uid),
-        uid: String(msg.uid),
-        gid: _gid(account.id, openFolder, msg.uid),
-        message_id: env.messageId || "",
-        subject: env.subject || "",
-        from: firstAddress(env.from),
-        date: formatDateTime(msg.internalDate || env.date),
-        unread,
-        has_attachments: hasAttachmentsFromBodyStructure(msg.bodyStructure),
-        account: account.email,
-        account_id: account.id,
-        folder: openFolder,
-        source: "imap_fetch",
-      };
+      const item = _envelopeItem(account, openFolder, msg, "imap_fetch");
       if (wantPreview && msg.source) Object.assign(item, await _previewFromSource(msg.source, previewChars));
       emails.push(item);
     }
@@ -333,7 +317,9 @@ async function listEmails({
       };
     }
 
-    for (const acc of list) {
+    // Accounts are independent connections: fetch them concurrently (bounded)
+    // instead of one after another. Result order still follows the config.
+    const rows = await _mapLimit(list, ACCOUNT_CONCURRENCY, async (acc) => {
       try {
         const r = await _fetchEmailsForAccount({
           account: acc,
@@ -347,11 +333,12 @@ async function listEmails({
           includeServerUids,
           includeAccountUnread,
         });
-        results.push({ account: acc, ...r });
+        return { account: acc, ...r };
       } catch (e) {
-        results.push({ account: acc, success: false, error: e && e.message ? e.message : "fetch failed" });
+        return { account: acc, success: false, error: e && e.message ? e.message : "fetch failed" };
       }
-    }
+    });
+    results.push(...rows);
   }
 
   const ok = results.filter((r) => r.success);
@@ -634,14 +621,16 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
 
   let timed_out = false;
   const pending_accounts = [];
-  for (const acc of targets) {
+  // Accounts are searched concurrently (bounded); each runs on its own
+  // connection. Outcomes are collected per account and flattened in config
+  // order afterwards, so the output doesn't depend on which finished first.
+  const outcomes = await _mapLimit(targets, ACCOUNT_CONCURRENCY, async (acc) => {
     // Bound the whole search: a cross-account / --folder all scan over slow
     // (client-side-filtered) providers could otherwise run unbounded. On
     // timeout we stop scanning and return whatever we have so far.
     if (_deadlineExceeded(started, timeoutMs)) {
       timed_out = true;
-      pending_accounts.push(acc.id || acc.email || "");
-      continue;
+      return { pending: true };
     }
     try {
       // The client this account's scan is running on, so a timeout can close
@@ -689,15 +678,23 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
         abandoned = true;
         if (workClient) abandonClient(workClient);
         timed_out = true;
-        pending_accounts.push(acc.id || acc.email || "");
         return { success: true, total_found: 0, emails: [], account_timed_out: true };
       });
-      perAccount.push({ account: acc, ...r });
+      return { row: { account: acc, ...r }, pending: Boolean(r && r.account_timed_out) };
     } catch (e) {
-      failed_accounts.push({ account: acc.email || "", account_id: acc.id || "", error: e && e.message ? e.message : "search failed" });
-      perAccount.push({ account: acc, success: false, error: e && e.message ? e.message : "search failed", total_found: 0, emails: [] });
+      const error = e && e.message ? e.message : "search failed";
+      return {
+        failed: { account: acc.email || "", account_id: acc.id || "", error },
+        row: { account: acc, success: false, error, total_found: 0, emails: [] },
+      };
     }
-  }
+  });
+  outcomes.forEach((o, i) => {
+    const acc = targets[i];
+    if (o.pending) pending_accounts.push(acc.id || acc.email || "");
+    if (o.failed) failed_accounts.push(o.failed);
+    if (o.row) perAccount.push(o.row);
+  });
 
   const allEmails = perAccount.flatMap((r) => (r && r.success ? r.emails || [] : []));
   allEmails.sort((a, b) => _compareDatesDesc(a.date, b.date));

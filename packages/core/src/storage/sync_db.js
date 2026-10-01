@@ -139,12 +139,13 @@ function _releaseLock(lockPath) {
 // statements on every open (each CLI call and every daemon cache read opens
 // the file). A file from a newer mail-use (higher version) is left alone: we
 // only use columns that newer versions keep.
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function _ensureSchema(db) {
   const current = Number(_execScalar(db, "PRAGMA user_version") || 0);
   if (current >= SCHEMA_VERSION) return;
   _createBaseSchema(db);
+  if (current < 2) _migrateToV2(db);
   db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 
@@ -251,20 +252,62 @@ function _createBaseSchema(db) {
   `);
 
   const indexes = [
-    "CREATE INDEX IF NOT EXISTS idx_emails_account_folder ON emails (account_id, folder_id)",
     "CREATE INDEX IF NOT EXISTS idx_emails_uid ON emails (uid)",
     "CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails (message_id)",
     "CREATE INDEX IF NOT EXISTS idx_emails_date_sent ON emails (date_sent)",
-    "CREATE INDEX IF NOT EXISTS idx_emails_is_read ON emails (is_read)",
     "CREATE INDEX IF NOT EXISTS idx_emails_is_flagged ON emails (is_flagged)",
-    "CREATE INDEX IF NOT EXISTS idx_emails_subject ON emails (subject)",
     "CREATE INDEX IF NOT EXISTS idx_emails_sender_email ON emails (sender_email)",
     "CREATE INDEX IF NOT EXISTS idx_folders_account ON folders (account_id)",
     "CREATE INDEX IF NOT EXISTS idx_sync_history_account ON sync_history (account_id)",
     "CREATE INDEX IF NOT EXISTS idx_attachments_email ON attachments (email_id)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uniq_emails_account_folder_uid ON emails (account_id, folder_id, uid)",
+    // The cached list query: one account+folder, newest first.
+    "CREATE INDEX IF NOT EXISTS idx_emails_account_folder_date ON emails (account_id, folder_id, date_sent)",
   ];
   for (const sql of indexes) db.run(sql);
+}
+
+function _columnNames(db, table) {
+  return new Set(_execRows(db, `PRAGMA table_info(${table})`).map((r) => String(r.name)));
+}
+
+// Is there a UNIQUE index on exactly `cols` (in order) other than `except`?
+function _hasUniqueIndex(db, table, cols, except) {
+  for (const idx of _execRows(db, `PRAGMA index_list(${table})`)) {
+    if (!idx.unique || idx.name === except) continue;
+    const idxCols = _execRows(db, `PRAGMA index_info("${String(idx.name).replace(/"/g, '""')}")`)
+      .sort((a, b) => a.seqno - b.seqno)
+      .map((r) => r.name);
+    if (idxCols.length === cols.length && idxCols.every((c, i) => c === cols[i])) return true;
+  }
+  return false;
+}
+
+// v1 -> v2:
+//  - folders gain the IMAP state incremental sync needs (UIDVALIDITY,
+//    UIDNEXT, HIGHESTMODSEQ). TEXT for the 64-bit values imapflow hands back
+//    as BigInt.
+//  - index cleanup: uniq_emails_account_folder_uid duplicated the table's own
+//    UNIQUE(account_id, folder_id, uid); idx_emails_account_folder is a prefix
+//    of that same unique index; is_read / subject single-column indexes were
+//    never selective enough to be used, yet every upsert maintained them.
+function _migrateToV2(db) {
+  const cols = _columnNames(db, "folders");
+  if (!cols.has("uid_validity")) db.run("ALTER TABLE folders ADD COLUMN uid_validity TEXT");
+  if (!cols.has("uid_next")) db.run("ALTER TABLE folders ADD COLUMN uid_next INTEGER");
+  if (!cols.has("highest_modseq")) db.run("ALTER TABLE folders ADD COLUMN highest_modseq TEXT");
+
+  db.run("DROP INDEX IF EXISTS idx_emails_is_read");
+  db.run("DROP INDEX IF EXISTS idx_emails_subject");
+  db.run("DROP INDEX IF EXISTS idx_emails_account_folder");
+  // The upserts rely on a unique key over (account_id, folder_id, uid). Only
+  // drop the explicit index when the table constraint provides one, so an
+  // odd legacy table without the constraint keeps working.
+  const key = ["account_id", "folder_id", "uid"];
+  if (_hasUniqueIndex(db, "emails", key, "uniq_emails_account_folder_uid")) {
+    db.run("DROP INDEX IF EXISTS uniq_emails_account_folder_uid");
+  } else {
+    db.run("CREATE UNIQUE INDEX IF NOT EXISTS uniq_emails_account_folder_uid ON emails (account_id, folder_id, uid)");
+  }
 }
 
 function _execScalar(db, sql, params) {
@@ -345,16 +388,22 @@ async function withWriteSession(dbPath, fn) {
           [String(id), String(email), String(provider)]
         );
       },
-      upsertFolder({ accountId, name, displayName, messageCount, unreadCount, lastSyncIso }) {
+      // uidValidity / uidNext / highestModseq: the folder's IMAP sync state.
+      // Omit (undefined) to keep what is stored.
+      upsertFolder({ accountId, name, displayName, messageCount, unreadCount, lastSyncIso, uidValidity, uidNext, highestModseq }) {
+        const opt = (v, conv) => (v === undefined || v === null || v === "" ? null : conv(v));
         h.db.run(
           `
-            INSERT INTO folders (account_id, name, display_name, message_count, unread_count, last_sync)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO folders (account_id, name, display_name, message_count, unread_count, last_sync, uid_validity, uid_next, highest_modseq)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, name) DO UPDATE SET
               display_name = excluded.display_name,
               message_count = excluded.message_count,
               unread_count = excluded.unread_count,
-              last_sync = excluded.last_sync
+              last_sync = excluded.last_sync,
+              uid_validity = COALESCE(excluded.uid_validity, folders.uid_validity),
+              uid_next = COALESCE(excluded.uid_next, folders.uid_next),
+              highest_modseq = COALESCE(excluded.highest_modseq, folders.highest_modseq)
           `,
           [
             String(accountId),
@@ -363,6 +412,9 @@ async function withWriteSession(dbPath, fn) {
             Number(messageCount || 0),
             Number(unreadCount || 0),
             String(lastSyncIso || new Date().toISOString()),
+            opt(uidValidity, String),
+            opt(uidNext, Number),
+            opt(highestModseq, String),
           ]
         );
         return Number(_execScalar(
@@ -455,6 +507,15 @@ async function withWriteSession(dbPath, fn) {
       },
       getUids({ accountId, folder }) {
         return _cachedUids(h.db, accountId, folder);
+      },
+      // Drop every cached email of a folder (its UIDVALIDITY changed, so the
+      // cached UIDs no longer name the same messages).
+      clearFolder({ accountId, folder }) {
+        h.db.run(
+          `DELETE FROM emails WHERE account_id = ? AND (folder_id IN (SELECT id FROM folders WHERE account_id = ? AND name = ? COLLATE NOCASE) OR (folder_id IS NULL AND ? = 'INBOX'))`,
+          [String(accountId), String(accountId), String(folder), String(folder)]
+        );
+        return h.db.getRowsModified();
       },
     };
     const result = await fn(session);
@@ -769,6 +830,31 @@ async function getEmailUIDsFromCache({ dbPath, accountId, folder }) {
   }
 }
 
+// What incremental sync needs to know about a folder from the last pass, in
+// one DB open: the IMAP state it recorded and the UIDs it cached.
+async function getFolderSyncState({ dbPath, accountId, folder }) {
+  const empty = { uidValidity: "", uidNext: 0, highestModseq: "", cachedUids: [] };
+  if (!dbPath || !fs.existsSync(dbPath)) return empty;
+  const h = await openSyncDb(dbPath);
+  try {
+    const row = _execRows(
+      h.db,
+      "SELECT uid_validity, uid_next, highest_modseq FROM folders WHERE account_id = ? AND name = ? COLLATE NOCASE",
+      [String(accountId), String(folder)]
+    )[0] || {};
+    return {
+      uidValidity: row.uid_validity != null ? String(row.uid_validity) : "",
+      uidNext: Number(row.uid_next || 0),
+      highestModseq: row.highest_modseq != null ? String(row.highest_modseq) : "",
+      cachedUids: _cachedUids(h.db, accountId, folder),
+    };
+  } catch {
+    return empty;
+  } finally {
+    try { h.close(); } catch { /* ignore */ }
+  }
+}
+
 // Reverse lookup for many uids in one DB open: Map<uid, folder> for the uids
 // the cache knows. IMAP UIDs are per-folder, so the same uid can exist in
 // several folders: prefer INBOX on a collision, then the most recently synced
@@ -816,6 +902,7 @@ module.exports = {
   listEmailsFromCache,
   lookupFolderForUid,
   lookupFoldersForUids,
+  getFolderSyncState,
   upsertAccount,
   upsertFolder,
   upsertEmails,
