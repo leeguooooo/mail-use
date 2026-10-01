@@ -10,6 +10,7 @@ const {
   _uidsSortedDesc, _compareDatesDesc, _mapLimit, ACCOUNT_CONCURRENCY,
 } = require("./internals");
 const { PREVIEW_SOURCE_QUERY, _applyPreview } = require("./message_source");
+const { _parseDateInput } = require("./dates");
 
 async function searchEmails({ query, from = "", subject = "", account_id = "", date_from = "", date_to = "", limit = 50, offset = 0, unread_only = false, folder = "all", preview_chars = 0, timeout_ms = 0 } = {}) {
   const previewChars = Math.max(0, Number(preview_chars || 0));
@@ -27,10 +28,13 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
   const scanAll = folderRaw.toLowerCase() === "all";
   const openFolder = _normalizeFolder(folder);
 
-  const df = date_from ? new Date(String(date_from)) : null;
-  const dt = date_to ? new Date(String(date_to)) : null;
-  const since = df && !Number.isNaN(df.getTime()) ? df : null;
-  const before = dt && !Number.isNaN(dt.getTime()) ? dt : null;
+  // Same parsing as listEmails: relative dates (7d, today) and an inclusive
+  // date-only date_to. MCP passes these through unexpanded.
+  const fromParsed = _parseDateInput(date_from);
+  const toParsed = _parseDateInput(date_to, { end: true });
+  const since = fromParsed.date;
+  const before = toParsed.date;
+  const dateWarnings = [fromParsed.warning, toParsed.warning].filter(Boolean);
 
   if (!q && !fromQ && !subjQ && !since && !before && !unreadOnly) {
     return { success: false, error: "Provide at least one of query, from, subject, date_from, date_to, unread_only" };
@@ -321,6 +325,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
     timed_out,
     ...(timed_out ? { pending_accounts, timeout_ms: timeoutMs, timed_out_note: `Search exceeded ${timeoutMs}ms and returned partial results; narrow with --account-id / --folder INBOX or raise --timeout` } : {}),
     search_params: { query: q, date_from, date_to, unread_only: unreadOnly, folder },
+    ...(dateWarnings.length ? { warnings: dateWarnings } : {}),
     failed_accounts,
     failed_searches: [],
     partial_success: failed_accounts.length > 0,

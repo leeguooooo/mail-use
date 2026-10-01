@@ -486,12 +486,14 @@ function register(program, ctx) {
     .argument("<email_id>", "UID or gid (account_id:uid)")
     .option("--account-id <id>", "Required if email_id is a bare UID")
     .option("--folder <name>", "Folder", "INBOX")
-    .action(async (emailId, opts) => {
+    .action(async (emailId, opts, cmd) => {
       const refs = targets.resolveEmailRefs([emailId], opts.accountId);
       if (refs.error || !refs.accountId) {
         ctx.usage(refs.error || "Missing --account-id (or pass a gid like account_id:uid)");
       }
-      const result = await email.downloadAttachments({ email_id: refs.ids[0], folder: opts.folder, account_id: refs.accountId });
+      // UIDs are per folder: a 3-part gid names its folder, an explicit --folder wins.
+      const folder = _explicitOptionValue(cmd, opts, "folder") || refs.refs[0].folder || opts.folder;
+      const result = await email.downloadAttachments({ email_id: refs.ids[0], folder, account_id: refs.accountId });
       ctx.respond(result, "email attachments");
     });
 
@@ -506,7 +508,7 @@ function register(program, ctx) {
     .option("--folder <name>", "Folder", "INBOX")
     .option("--confirm", "Apply changes (default: dry-run)")
     .option("--dry-run")
-    .action(async (emailId, opts) => {
+    .action(async (emailId, opts, cmd) => {
       const set = Boolean(opts.set);
       const unset = Boolean(opts.unset);
       if ((set && unset) || (!set && !unset)) {
@@ -522,7 +524,7 @@ function register(program, ctx) {
         email_id: refs.ids[0],
         set_flag: set,
         flag_type: opts.flagType,
-        folder: opts.folder,
+        folder: _explicitOptionValue(cmd, opts, "folder") || refs.refs[0].folder || opts.folder,
         account_id: refs.accountId,
         dry_run: dryRun,
       });
@@ -539,19 +541,25 @@ function register(program, ctx) {
     .option("--account-id <id>", "Required if email_ids are bare UIDs")
     .option("--confirm", "Apply changes (default: dry-run)")
     .option("--dry-run")
-    .action(async (ids, opts) => {
+    .action(async (ids, opts, cmd) => {
       const refs = targets.resolveEmailRefs(ids, opts.accountId);
       if (refs.error || !refs.accountId) {
         ctx.usage(refs.error || "Missing --account-id (or pass gids like account_id:uid)");
       }
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
-      const result = await email.moveEmails({
-        email_ids: refs.ids,
+      // Gids from `search --folder all` can span folders: move each folder's
+      // UIDs out of that folder. An explicit --source-folder overrides them.
+      const explicitSource = _explicitOptionValue(cmd, opts, "sourceFolder");
+      const groups = explicitSource
+        ? new Map([[explicitSource, refs.ids]])
+        : targets.groupRefsByFolder(refs.refs, opts.sourceFolder);
+      const result = await targets.mutateByFolder(groups, (emailIds, folder) => email.moveEmails({
+        email_ids: emailIds,
         target_folder: opts.targetFolder,
-        source_folder: opts.sourceFolder,
+        source_folder: folder,
         account_id: refs.accountId,
         dry_run: dryRun,
-      });
+      }));
       _markConfirmationRequired(result, opts, dryRun);
       ctx.respond(result, "email move");
     });

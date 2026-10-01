@@ -14,14 +14,16 @@ function createStopSignal() {
   process.once("SIGTERM", trigger);
   return {
     stopped: () => state.stopped,
+    // For tests: sleeps still waiting to be woken.
+    pendingWakers: () => state.wakers.size,
     sleep(ms) {
       if (state.stopped) return Promise.resolve();
       return new Promise((resolve) => {
+        const wake = () => { clearTimeout(t); resolve(); };
         const t = setTimeout(() => {
-          state.wakers.delete(resolve);
+          state.wakers.delete(wake);
           resolve();
         }, ms);
-        const wake = () => { clearTimeout(t); resolve(); };
         state.wakers.add(wake);
       });
     },

@@ -55,6 +55,16 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
     throw e;
   }
   let lastUid = client.mailbox && client.mailbox.uidNext ? Number(client.mailbox.uidNext) : 0;
+  // Some servers (163) leave UIDNEXT out of SELECT. Start after the highest
+  // existing UID instead, or nothing would ever count as new.
+  if (!lastUid) {
+    try {
+      const uids = await client.search({ all: true }, { uid: true });
+      lastUid = (Array.isArray(uids) && uids.length ? Math.max(...uids.map(Number)) : 0) + 1;
+    } catch {
+      lastUid = 1;
+    }
+  }
 
   // Serialize concurrent `exists` events: if a fetch is already running,
   // remember that we need another pass. Without this, two events that

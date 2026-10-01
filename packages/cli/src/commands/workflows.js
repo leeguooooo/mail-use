@@ -86,16 +86,17 @@ function registerDigest(program, ctx) {
     .action(async (opts) => {
       const intervalSec = Math.max(5, Number(opts.interval || 3600));
       const stop = createStopSignal();
-      try {
-        while (!stop.stopped()) {
+      // Same as `sync daemon`: a failed pass is logged, the loop keeps going.
+      while (!stop.stopped()) {
+        try {
           await digest.run({ dry_run: Boolean(opts.dryRun), debug_path: "" });
-          if (stop.stopped()) break;
-          await stop.sleep(intervalSec * 1000);
+        } catch (e) {
+          process.stderr.write(`mail-use: digest pass failed: ${(e && e.message) || e}\n`);
         }
-        return process.exit(0);
-      } catch {
-        return process.exit(0);
+        if (stop.stopped()) break;
+        await stop.sleep(intervalSec * 1000);
       }
+      return process.exit(0);
     });
 }
 

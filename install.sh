@@ -98,7 +98,7 @@ if [ -n "$expected" ]; then
     skip_verify "no sha256sum, shasum or openssl to verify the download"
   fi
   if [ -n "$actual" ]; then
-    [ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" = "$actual" ] \
+    [ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" = "$(printf '%s' "$actual" | tr 'A-F' 'a-f')" ] \
       || err "checksum mismatch (expected $expected, got $actual)"
     printf 'mail-use-install: checksum ok\n'
   fi

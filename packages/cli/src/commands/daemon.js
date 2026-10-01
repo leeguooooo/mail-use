@@ -29,7 +29,7 @@ function register(program, ctx) {
         // launchd/systemd respawn this process in a tight loop.
         if (e && e.code === "EADDRINUSE") {
           const result = { success: true, already_running: true, message: (e && e.message) || "daemon already running" };
-          ctx.respond(result, () => process.stderr.write(result.message + "\n"));
+          return ctx.respond(result, () => process.stderr.write(result.message + "\n"));
         }
         const result = { success: false, error: (e && e.message) || "daemon failed", error_code: "operation_failed" };
         ctx.respond(result, () => process.stderr.write(result.error + "\n"));

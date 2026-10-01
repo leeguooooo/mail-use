@@ -36,7 +36,8 @@ function register(program, ctx) {
         preview_chars: previewChars,
       });
       if (!listed || listed.success === false) {
-        ctx.respond(listed, () => {});
+        const failed = listed || { success: false, error: "list failed" };
+        ctx.respond(failed, () => process.stderr.write(`${failed.error || "list failed"}\n`));
       }
 
       const hits = [];

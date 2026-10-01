@@ -67,16 +67,18 @@ function register(program, ctx) {
     .action(async (opts) => {
       const intervalSec = Math.max(5, Number(opts.interval || 300));
       const stop = createStopSignal();
-      try {
-        while (!stop.stopped()) {
+      // A failed pass (network down, server hiccup) is logged and retried on
+      // the next tick; only a clean stop ends the loop with exit 0.
+      while (!stop.stopped()) {
+        try {
           await sync.force({ account_id: opts.accountId || "", full: Boolean(opts.full) });
-          if (stop.stopped()) break;
-          await stop.sleep(intervalSec * 1000);
+        } catch (e) {
+          process.stderr.write(`mail-use: sync pass failed: ${(e && e.message) || e}\n`);
         }
-        return process.exit(0);
-      } catch {
-        return process.exit(0);
+        if (stop.stopped()) break;
+        await stop.sleep(intervalSec * 1000);
       }
+      return process.exit(0);
     });
 }
 

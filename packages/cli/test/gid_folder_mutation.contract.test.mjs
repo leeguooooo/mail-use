@@ -79,6 +79,37 @@ describe("review-fix: 3-part gid parsing + folder-honoring mutations", () => {
     expect(JSON.parse(r.stdout).folder).toBe("Archive");
   });
 
+  async function runCli(name, args) {
+    const root = tmpRoot(name);
+    fs.rmSync(root, { recursive: true, force: true });
+    const env = testEnv(root);
+    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
+    const r = await execa("node", [cliBin(), ...args, "--json"], { reject: false, env });
+    expect(r.exitCode).toBe(0);
+    return JSON.parse(r.stdout);
+  }
+
+  it("CLI move takes the source folder from the gid, not INBOX", async () => {
+    const p = await runCli("gid_move_folder", ["email", "move", "mock_acc:Archive:5", "--target-folder", "Trash"]);
+    expect(p.source_folder).toBe("Archive");
+  });
+
+  it("CLI move groups gids that span folders", async () => {
+    const p = await runCli("gid_move_groups", ["email", "move", "mock_acc:Archive:5", "mock_acc:INBOX:101", "--target-folder", "Trash"]);
+    expect(p.folders_count).toBe(2);
+    expect(p.results.map((r) => [r.source_folder, r.email_ids])).toEqual([["Archive", ["5"]], ["INBOX", ["101"]]]);
+  });
+
+  it("CLI move: an explicit --source-folder overrides the gid folder", async () => {
+    const p = await runCli("gid_move_explicit", ["email", "move", "mock_acc:Archive:5", "--source-folder", "Sent", "--target-folder", "Trash"]);
+    expect(p.source_folder).toBe("Sent");
+  });
+
+  it("CLI flag honors the gid folder", async () => {
+    const p = await runCli("gid_flag_folder", ["email", "flag", "mock_acc:Archive:5", "--set"]);
+    expect(p.would_flag.folder).toBe("Archive");
+  });
+
   it("_isSpecialMutationFolder flags Sent/Drafts/Junk/Trash but not INBOX/custom", () => {
     for (const f of ["Sent", "Drafts", "Junk", "Spam", "Trash", "Deleted Items", "[Gmail]/Trash", "Work/Sent"]) {
       expect(_isSpecialMutationFolder(f), f).toBe(true);
