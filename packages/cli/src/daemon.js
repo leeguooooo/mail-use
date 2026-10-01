@@ -292,11 +292,10 @@ async function _dispatch(line, conn, ctx) {
     // Account credentials are read fresh from auth.json on each call, so a
     // reload mostly means: drop existing connections so the next acquire
     // picks up new creds.
-    // reset() drops idle connections but keeps the pool and its idle reaper
-    // alive; closeAll() is for final shutdown and stops the reaper for good.
-    // The fallback only covers a core that predates reset().
-    if (typeof ctx.pool.reset === "function") await ctx.pool.reset();
-    else await ctx.pool.closeAll();
+    // reset(), not closeAll(): it closes idle connections, lets in-use ones
+    // finish, and keeps the idle reaper running. closeAll() is for final
+    // shutdown and stops the reaper for good.
+    ctx.pool.reset();
     return _respond(conn, { id, ok: true, result: { reloaded: true } });
   }
   if (fnName === "__shutdown") {
