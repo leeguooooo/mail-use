@@ -73,7 +73,7 @@ mail-use apple-mail import --email you@qq.com
 |---|---|
 | QQ 邮箱 | 网页版 [wx.mail.qq.com](https://wx.mail.qq.com) → 设置 → 账号与安全 → 安全设置 → 开启 IMAP/SMTP 服务，按提示生成授权码 |
 | 163 / 126 邮箱 | 网页版 [mail.163.com](https://mail.163.com) 或 [mail.126.com](https://mail.126.com) → 设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP 服务 → 新增授权密码 |
-| Gmail | 先在 Google 账号里开启两步验证，再到 [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) 生成应用专用密码 |
+| Gmail | 先[开启两步验证](https://myaccount.google.com/signinoptions/twosv)，再到 [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) 生成应用专用密码 |
 | iCloud 邮箱 | 先给 Apple 账号开启双重认证，再到 [account.apple.com](https://account.apple.com) → 登录与安全 → App 专用密码 |
 | Outlook / Hotmail | 微软已不再允许个人账号用密码登录 IMAP，暂不支持 |
 
@@ -94,6 +94,8 @@ mail-use account add
 **「邮件」里出现了两个一样的邮箱。** 在系统设置 → 通用 → 设备管理里移除「mail-use 邮箱账号」即可。`mail-use apple-mail` 默认会跳过「邮件」里已有的邮箱，加了 `--include-existing` 才会重复。
 
 **点了「不允许」，之后 status / import 一直失败。** 系统设置 → 隐私与安全性 → 自动化 → 终端，打开「邮件」的开关。
+
+**Gmail 的应用专用密码页面显示 "The setting you are looking for is not available for your account"。** 绝大多数是两步验证还没开：先到 [myaccount.google.com/signinoptions/twosv](https://myaccount.google.com/signinoptions/twosv) 开启，再回来生成。也要看一眼页面右上角的头像，浏览器登了多个 Google 账号时，打开的可能是另一个。两步验证开着还是这样，说明账号只用了实体安全密钥、开了高级保护，或者是公司/学校账号被管理员关掉了，这几种情况 Google 不提供应用专用密码。
 
 **import 提示授权码不对。** 授权码要在网页版邮箱里生成，复制时不要带空格。QQ 和 163 的授权码在生成页面只显示一次，忘了就再生成一个新的。
 

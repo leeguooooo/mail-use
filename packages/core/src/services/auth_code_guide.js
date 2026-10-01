@@ -78,7 +78,7 @@ const GUIDES = {
     needs: "应用专用密码",
     url: "https://myaccount.google.com/apppasswords",
     steps: [
-      "先在 Google 账号里开启「两步验证」（没开的话这个页面会提示你）",
+      "先开启两步验证：https://myaccount.google.com/signinoptions/twosv（没开时下面的页面只会显示 not available for your account）；右上角头像要是这个邮箱",
       "打开上面的链接，随便起个名字（比如 mail-use），点「创建」",
       "把显示的 16 位密码复制过来（空格可以不管）",
     ],
