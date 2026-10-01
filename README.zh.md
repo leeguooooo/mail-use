@@ -128,19 +128,18 @@ cp examples/accounts.example.json ~/.config/mailbox/auth.json
 - 认证信息：`~/.config/mailbox/auth.json`
 - 其他配置：`~/.config/mailbox/config.toml`
 
-## 在苹果「邮件」里用同样的账号
+## 和苹果「邮件」互通
 
-mail-use 主要给 AI 用，但人也可以在苹果自带的「邮件」里看同样的邮箱，服务器、端口、授权码一个都不用填：
+mail-use 给 AI 用，「邮件」给人用，两边连同一个邮箱，账号配一次就够：
 
 ```bash
-mail-use apple-mail                       # 全部账号；生成描述文件并在系统设置里打开
-mail-use apple-mail --account-id me@qq.com
-mail-use apple-mail --output ~/Desktop/mail.mobileconfig --no-open   # 比如隔空投送到 iPhone
+mail-use apple-mail status    # 看两边各有哪些邮箱
+mail-use apple-mail           # mail-use 的账号加到「邮件」：系统设置自动打开，点「安装」即可
+mail-use apple-mail import    # 「邮件」里的账号加到 mail-use：每个邮箱粘贴一次授权码
+mail-use account add          # 两边都没有时，从这里开始
 ```
 
-它按 mail-use 自己在用的 IMAP/SMTP 设置生成描述文件并打开。macOS 只允许在系统设置里安装描述文件，所以剩下一步要人点：**系统设置 → 通用 → 设备管理 → mail-use 邮箱账号 → 安装**，输入开机密码。「邮件」和 mail-use 都直连服务器，已读、移动、删除会互相同步。
-
-描述文件里是明文密码：临时文件打开 60 秒后自动删除，`--output` 写出的文件要自己删。重复运行会替换已装的描述文件，不会出现重复账号；移除描述文件，账号也会从「邮件」里移除。
+完整步骤、各邮箱授权码在哪里拿、常见问题：[docs/guides/apple-mail.md](docs/guides/apple-mail.md)。
 
 ## 常用命令
 

@@ -9,4 +9,6 @@ module.exports = {
   get email() { return require("./services/email"); },
   get sync() { return require("./services/sync"); },
   get appleMail() { return require("./services/apple_mail"); },
+  get authCodeGuide() { return require("./services/auth_code_guide"); },
+  get providerDefaults() { return require("./services/provider_defaults"); },
 };

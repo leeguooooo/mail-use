@@ -28,6 +28,14 @@ function createImapClient(account, { onError } = {}) {
     auth: { user: account.email, pass: account.password },
     tls: { rejectUnauthorized: !_allowInsecureTls(), minVersion: "TLSv1.2" },
     logger: false,
+    // A caller with a hard deadline (account setup checks) passes timeouts so
+    // the connection gives up on its own instead of lingering after the
+    // caller has stopped waiting.
+    ...(account.timeouts ? {
+      connectionTimeout: account.timeouts.connectMs,
+      greetingTimeout: account.timeouts.connectMs,
+      socketTimeout: account.timeouts.socketMs,
+    } : {}),
   });
   client.on("error", typeof onError === "function" ? onError : () => {});
   return client;
