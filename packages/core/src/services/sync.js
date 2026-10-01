@@ -126,6 +126,7 @@ async function force({ account_id = "", full = false } = {}) {
           const removed = await syncDb.removeEmailsFromCache({
             dbPath: pc.emailSyncDb,
             accountId: a.id,
+            folder: "INBOX",
             uids: orphanedUids,
           });
           if (removed && removed.success) emailsDeleted = orphanedUids.length;

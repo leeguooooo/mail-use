@@ -239,6 +239,10 @@ async function listEmails({
     try {
       const pc = paths.getPathConfig();
       const resolved = account_id ? accounts.getAccountByIdOrEmail(account_id) : null;
+      // An unknown account must be an error, not "no account filter": falling
+      // through with an empty id served every account's cached mail as if it
+      // were this one's, success:true.
+      if (resolved && !resolved.success) return resolved;
       const resolvedId = resolved && resolved.success ? resolved.account.id : "";
       const cache = await require("../storage/sync_db").listEmailsFromCache({
         dbPath: pc.emailSyncDb,
@@ -1088,6 +1092,7 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
       await syncDb.updateEmailFlags({
         dbPath,
         accountId: acc.account.id,
+        folder: openFolder,
         uids: successfulUids,
         unread: markAs === "unread",
       });
@@ -1187,9 +1192,12 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
     }
     const deleted = results.filter((r) => r.success).length;
     if (deleted > 0) {
+      // UIDs are per-folder: scope the removal to the folder we deleted from,
+      // or the same uid in another folder vanishes from the cache too.
       await syncDb.removeEmailsFromCache({
         dbPath: paths.getPathConfig().emailSyncDb,
         accountId: acc.account.id,
+        folder: openFolder,
         uids: results.filter((r) => r.success).map((r) => r.email_id),
       });
     }
@@ -1587,6 +1595,21 @@ async function flagEmail({ email_id, set_flag, flag_type = "flagged", folder = "
     await client.mailboxOpen(openFolder);
     if (set) await client.messageFlagsAdd(uid, [flag], { uid: true });
     else await client.messageFlagsRemove(uid, [flag], { uid: true });
+    // Keep the cache in step with the server for the flags it mirrors, so a
+    // cached list right after `flag --type read` doesn't contradict it.
+    if (flag === "\\Seen" || flag === "\\Flagged") {
+      const dbPath = paths.getPathConfig().emailSyncDb;
+      await syncDb.updateEmailFlags({
+        dbPath,
+        accountId: acc.account.id,
+        folder: openFolder,
+        uids: [String(uid)],
+        ...(flag === "\\Seen" ? { unread: !set } : { flagged: set }),
+      });
+      if (flag === "\\Seen") {
+        await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: openFolder });
+      }
+    }
     return {
       success: true,
       message: `Flag "${flagType}" ${set ? "set" : "unset"}`,
@@ -1625,14 +1648,26 @@ async function moveEmails({ email_ids, target_folder, source_folder = "INBOX", a
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(src);
     const failed_ids = [];
+    const moved_ids = [];
     let moved = 0;
     for (const uid of ids) {
       try {
         await client.messageMove(uid, tgt, { uid: true });
         moved += 1;
+        moved_ids.push(String(uid));
       } catch {
         failed_ids.push(String(uid));
       }
+    }
+    if (moved_ids.length) {
+      // The moved messages no longer exist under these UIDs in the source
+      // folder (the target assigns new ones). Drop them from the cache so a
+      // cached list doesn't keep showing them where they were, and invalidate
+      // both folders' unread snapshots — unread mail changed sides.
+      const dbPath = paths.getPathConfig().emailSyncDb;
+      await syncDb.removeEmailsFromCache({ dbPath, accountId: acc.account.id, folder: src, uids: moved_ids });
+      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: src });
+      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: tgt });
     }
     return {
       success: failed_ids.length === 0,
@@ -1749,7 +1784,7 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
             const item = {
               id: String(uidNum),
               uid: String(uidNum),
-              gid: _gid(acc.account.id, folder, uidNum),
+              gid: _gid(acc.account.id, openFolder, uidNum),
               message_id: env.messageId || "",
               subject: env.subject || "",
               from: firstAddress(env.from),

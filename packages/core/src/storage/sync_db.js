@@ -22,19 +22,83 @@ function _readDbFile(dbPath) {
   }
 }
 
+// The cache holds subjects, senders and recipients of the user's mail: owner
+// only. Files are created 0600 and their directory 0700; an existing file is
+// tightened best-effort (it may predate this, or live on a filesystem that
+// ignores modes).
+const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
+
+function _chmodBestEffort(p, mode) {
+  try { fs.chmodSync(p, mode); } catch { /* ignore */ }
+}
+
 function _writeDbFileAtomic(dbPath, bytes) {
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: DIR_MODE });
   const tmp = `${dbPath}.tmp.${process.pid}.${Date.now()}`;
-  fs.writeFileSync(tmp, Buffer.from(bytes));
+  fs.writeFileSync(tmp, Buffer.from(bytes), { mode: FILE_MODE });
+  // writeFileSync's mode is filtered through the umask; make it exact.
+  _chmodBestEffort(tmp, FILE_MODE);
   fs.renameSync(tmp, dbPath);
+}
+
+// A lock older than this is presumed abandoned even if its pid is alive: no
+// write session runs for minutes, so a live pid that old is almost certainly
+// a different process that inherited a recycled pid.
+const LOCK_MAX_AGE_MS = 10 * 60 * 1000;
+// A lock whose owner can't be identified (empty/garbled file — e.g. a crash
+// between create and write) is presumed abandoned after this.
+const LOCK_UNKNOWN_OWNER_AGE_MS = 60 * 1000;
+
+function _pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: the process exists but belongs to someone else.
+    return Boolean(e && e.code === "EPERM");
+  }
+}
+
+// Is the lock described by (content, stat) safe to take over?
+function _lockIsStale(content, st, now = Date.now()) {
+  const age = now - st.mtimeMs;
+  const pid = Number.parseInt(String(content || "").trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return age > LOCK_UNKNOWN_OWNER_AGE_MS;
+  if (!_pidAlive(pid)) return true;
+  return age > LOCK_MAX_AGE_MS;
+}
+
+// Take over a stale lock without racing another taker. Two processes that
+// both judge the same lock stale must not both end up holding a lock: the
+// old "stat mtime, then unlink" let B unlink the lock A had just created.
+// Instead, rename the stale file aside (atomic; only one renamer wins) and
+// check that what we moved is the very file we judged stale. If it isn't —
+// another process replaced it in between — put it back.
+function _takeOverStaleLock(lockPath, st) {
+  const aside = `${lockPath}.stale.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  try {
+    fs.renameSync(lockPath, aside);
+  } catch {
+    return; // someone else got there first; just retry the create
+  }
+  try {
+    const moved = fs.statSync(aside);
+    if (moved.ino !== st.ino || moved.mtimeMs !== st.mtimeMs) {
+      // We moved a fresh, live lock. linkSync fails if the path is taken,
+      // so this never clobbers a lock created since.
+      try { fs.linkSync(aside, lockPath); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  try { fs.unlinkSync(aside); } catch { /* ignore */ }
 }
 
 async function _acquireLock(dbPath, { retries = 100, delayMs = 50 } = {}) {
   const lockPath = `${dbPath}.lock`;
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: DIR_MODE });
   for (let i = 0; i < retries; i += 1) {
     try {
-      const fd = fs.openSync(lockPath, "wx");
+      const fd = fs.openSync(lockPath, "wx", FILE_MODE);
       try {
         fs.writeSync(fd, String(process.pid));
       } finally {
@@ -43,11 +107,12 @@ async function _acquireLock(dbPath, { retries = 100, delayMs = 50 } = {}) {
       return lockPath;
     } catch (e) {
       if (e && e.code !== "EEXIST") throw e;
-      // Stale lock: if older than 60s, remove it.
       try {
         const st = fs.statSync(lockPath);
-        if (Date.now() - st.mtimeMs > 60_000) {
-          try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+        let content = "";
+        try { content = fs.readFileSync(lockPath, "utf8"); } catch { /* vanished */ }
+        if (_lockIsStale(content, st)) {
+          _takeOverStaleLock(lockPath, st);
           continue;
         }
       } catch { /* lock disappeared, retry */ }
@@ -59,6 +124,13 @@ async function _acquireLock(dbPath, { retries = 100, delayMs = 50 } = {}) {
 
 function _releaseLock(lockPath) {
   if (!lockPath) return;
+  // Only remove a lock that is still ours. If it was taken over as stale
+  // while we held it, the file now belongs to the new owner.
+  try {
+    if (fs.readFileSync(lockPath, "utf8").trim() !== String(process.pid)) return;
+  } catch {
+    return;
+  }
   try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
 }
 
@@ -236,12 +308,26 @@ async function withWriteSession(dbPath, fn) {
   const lockPath = await _acquireLock(dbPath);
   let h;
   try {
+    // Tighten a DB file created before modes were enforced. The flush below
+    // replaces it with a fresh 0600 file anyway; this covers a failed write.
+    if (fs.existsSync(dbPath)) _chmodBestEffort(dbPath, FILE_MODE);
     h = await openSyncDb(dbPath);
     const session = {
       db: h.db,
       upsertAccount({ id, email, provider }) {
+        // email is UNIQUE too: an account re-added under a new id must
+        // replace the old row, as INSERT OR REPLACE used to do.
+        h.db.run("DELETE FROM accounts WHERE email = ? AND id <> ?", [String(email), String(id)]);
+        // Upsert in place rather than INSERT OR REPLACE, which deletes and
+        // re-inserts the row and so resets created_at on every sync.
         h.db.run(
-          "INSERT OR REPLACE INTO accounts (id, email, provider, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+          `
+            INSERT INTO accounts (id, email, provider, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+              email = excluded.email,
+              provider = excluded.provider,
+              updated_at = CURRENT_TIMESTAMP
+          `,
           [String(id), String(email), String(provider)]
         );
       },
@@ -273,11 +359,28 @@ async function withWriteSession(dbPath, fn) {
       },
       upsertEmails({ accountId, folderId, emails }) {
         const stmt = h.db.prepare(
+          // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: REPLACE deletes the
+          // old row and inserts a new one, so every sync handed each cached
+          // email a new id and created_at, and wiped is_flagged set by
+          // `flag`. The sync payload carries no flagged state, so an existing
+          // row keeps its is_flagged / is_deleted.
           `
-            INSERT OR REPLACE INTO emails (
+            INSERT INTO emails (
               account_id, folder_id, uid, message_id, subject, sender, sender_email, recipients,
               date_sent, is_read, is_flagged, is_deleted, has_attachments, size_bytes, sync_status, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', CURRENT_TIMESTAMP)
+            ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
+              message_id = excluded.message_id,
+              subject = excluded.subject,
+              sender = excluded.sender,
+              sender_email = excluded.sender_email,
+              recipients = excluded.recipients,
+              date_sent = excluded.date_sent,
+              is_read = excluded.is_read,
+              has_attachments = excluded.has_attachments,
+              size_bytes = excluded.size_bytes,
+              sync_status = 'synced',
+              updated_at = CURRENT_TIMESTAMP
           `
         );
         try {
@@ -554,15 +657,29 @@ async function invalidateFolderUnreadCount({ dbPath, accountId, folder }) {
   }
 }
 
-async function removeEmailsFromCache({ dbPath, accountId, uids }) {
+// IMAP UIDs are only unique within a folder: uid 42 in INBOX and uid 42 in
+// Archive are different messages. Build the WHERE fragment that pins a uid
+// list to one folder (same matching rule as getEmailUIDsFromCache). With no
+// folder the scope is account-wide — kept only for external callers of the
+// old signature; every in-tree caller passes a folder.
+function _uidScope(accountId, folder, ids) {
+  let where = `account_id = ? AND uid IN (${_placeholders(ids)})`;
+  const params = [String(accountId), ...ids];
+  const f = folder == null ? "" : String(folder).trim();
+  if (f) {
+    where += " AND (folder_id IN (SELECT id FROM folders WHERE account_id = ? AND name = ? COLLATE NOCASE) OR (folder_id IS NULL AND ? = 'INBOX'))";
+    params.push(String(accountId), f, f);
+  }
+  return { where, params };
+}
+
+async function removeEmailsFromCache({ dbPath, accountId, folder, uids }) {
   const ids = [...new Set((uids || []).map((x) => String(x).trim()).filter(Boolean))];
   if (!ids.length) return { success: true, removed: 0 };
   try {
+    const { where, params } = _uidScope(accountId, folder, ids);
     await withWriteSession(dbPath, (s) => {
-      s.db.run(
-        `DELETE FROM emails WHERE account_id = ? AND uid IN (${_placeholders(ids)})`,
-        [String(accountId), ...ids]
-      );
+      s.db.run(`DELETE FROM emails WHERE ${where}`, params);
     });
     return { success: true, removed: ids.length };
   } catch (e) {
@@ -570,14 +687,22 @@ async function removeEmailsFromCache({ dbPath, accountId, uids }) {
   }
 }
 
-async function updateEmailFlags({ dbPath, accountId, uids, unread }) {
+// `unread` / `flagged`: pass a boolean to set that column, leave undefined to
+// leave it alone.
+async function updateEmailFlags({ dbPath, accountId, folder, uids, unread, flagged }) {
   const ids = [...new Set((uids || []).map((x) => String(x).trim()).filter(Boolean))];
   if (!ids.length) return { success: true, updated: 0 };
+  const sets = [];
+  const setParams = [];
+  if (unread !== undefined) { sets.push("is_read = ?"); setParams.push(unread ? 0 : 1); }
+  if (flagged !== undefined) { sets.push("is_flagged = ?"); setParams.push(flagged ? 1 : 0); }
+  if (!sets.length) return { success: true, updated: 0 };
   try {
+    const { where, params } = _uidScope(accountId, folder, ids);
     await withWriteSession(dbPath, (s) => {
       s.db.run(
-        `UPDATE emails SET is_read = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ? AND uid IN (${_placeholders(ids)})`,
-        [unread ? 0 : 1, String(accountId), ...ids]
+        `UPDATE emails SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE ${where}`,
+        [...setParams, ...params]
       );
     });
     return { success: true, updated: ids.length };
@@ -650,4 +775,8 @@ module.exports = {
   updateEmailFlags,
   getEmailUIDsFromCache,
   withWriteSession,
+  // exported for tests
+  _acquireLock,
+  _releaseLock,
+  _lockIsStale,
 };
