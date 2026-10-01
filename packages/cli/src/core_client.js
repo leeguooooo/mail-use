@@ -6,11 +6,23 @@
 
 const net = require("net");
 const fs = require("fs");
-const realCore = require("@mail-use/core");
-const realWorkflows = (() => {
-  try { return require("@mail-use/workflows"); } catch { return {}; }
-})();
-const { getSocketPath } = require("./daemon");
+const { getSocketPath } = require("./daemon_paths");
+
+// Core and workflows load on first use, not at require time: they pull in
+// sql.js, imapflow, mailparser and friends, which every CLI invocation paid for
+// even when it never touched mail (`--version`, `--help`, `daemon status`).
+let _realCore = null;
+let _realWorkflows = null;
+function _core() {
+  if (!_realCore) _realCore = require("@mail-use/core");
+  return _realCore;
+}
+function _workflows() {
+  if (!_realWorkflows) {
+    try { _realWorkflows = require("@mail-use/workflows"); } catch { _realWorkflows = {}; }
+  }
+  return _realWorkflows;
+}
 
 const CONNECT_TIMEOUT_MS = Number(process.env.MAILBOX_DAEMON_CONNECT_TIMEOUT_MS || 200);
 const CALL_TIMEOUT_MS = Number(process.env.MAILBOX_DAEMON_CALL_TIMEOUT_MS || 60000);
@@ -21,7 +33,8 @@ const CALL_TIMEOUT_MS = Number(process.env.MAILBOX_DAEMON_CALL_TIMEOUT_MS || 600
 const REPROBE_AFTER_MS = Number(process.env.MAILBOX_DAEMON_REPROBE_MS || 5000);
 
 let _client = null;
-let _lastProbeAt = 0;
+let _connecting = null;
+let _lastMissAt = 0;
 
 class DaemonClient {
   constructor(conn) {
@@ -54,26 +67,30 @@ class DaemonClient {
     for (const p of this.pending.values()) p.reject(err);
     this.pending.clear();
   }
-  call(fn, args) {
+  call(fn, args, timeoutMs = CALL_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       // Per-call timeout so a malformed/missing daemon response doesn't
-      // hang the CLI or MCP server forever.
-      const timer = setTimeout(() => {
-        if (!this.pending.has(id)) return;
-        this.pending.delete(id);
-        reject(Object.assign(new Error(`daemon call ${fn} timed out after ${CALL_TIMEOUT_MS}ms`), { code: "daemon_timeout" }));
-      }, CALL_TIMEOUT_MS);
-      if (typeof timer.unref === "function") timer.unref();
+      // hang the CLI or MCP server forever. 0 = no client-side limit (the
+      // call bounds itself, e.g. a sync pass).
+      let timer = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (!this.pending.has(id)) return;
+          this.pending.delete(id);
+          reject(Object.assign(new Error(`daemon call ${fn} timed out after ${timeoutMs}ms`), { code: "daemon_timeout" }));
+        }, timeoutMs);
+        if (typeof timer.unref === "function") timer.unref();
+      }
       const wrap = {
-        resolve: (v) => { clearTimeout(timer); resolve(v); },
-        reject: (e) => { clearTimeout(timer); reject(e); },
+        resolve: (v) => { if (timer) clearTimeout(timer); resolve(v); },
+        reject: (e) => { if (timer) clearTimeout(timer); reject(e); },
       };
       this.pending.set(id, wrap);
       try {
         this.conn.write(JSON.stringify({ id, fn, args: args || {} }) + "\n");
       } catch (e) {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         this.pending.delete(id);
         reject(e);
       }
@@ -96,15 +113,27 @@ async function _maybeConnect() {
   if (_client && _client.conn && !_client.conn.destroyed) return _client;
   _client = null;
 
+  // Concurrent callers (an MCP server fanning out tool calls) share the one
+  // connect in flight. Previously the probe timestamp was stamped before the
+  // connect resolved, so every caller after the first saw the cooldown and
+  // silently ran in-process while the daemon was coming up fine.
+  if (_connecting) return _connecting;
+
   // Cooldown: don't re-probe more than once every REPROBE_AFTER_MS after a
   // miss. Lets short-lived CLI calls fall through fast, lets long-running
   // MCP servers eventually pick up a daemon that started later.
-  const now = Date.now();
-  if (now - _lastProbeAt < REPROBE_AFTER_MS) return null;
-  _lastProbeAt = now;
+  if (Date.now() - _lastMissAt < REPROBE_AFTER_MS) return null;
 
+  _connecting = _connectOnce().then((c) => {
+    if (!c) _lastMissAt = Date.now();
+    return c;
+  }).finally(() => { _connecting = null; });
+  return _connecting;
+}
+
+function _connectOnce() {
   const sockPath = getSocketPath();
-  if (!fs.existsSync(sockPath)) return null;
+  if (!fs.existsSync(sockPath)) return Promise.resolve(null);
   return new Promise((resolve) => {
     const conn = net.createConnection(sockPath);
     let done = false;
@@ -121,6 +150,7 @@ async function _maybeConnect() {
       resolve(val);
     };
     conn.once("connect", () => {
+      if (done) return;
       const c = new DaemonClient(conn);
       // Drop the cached client when its socket dies so the next call
       // re-probes instead of trying to write to a dead pipe.
@@ -136,6 +166,33 @@ async function _maybeConnect() {
     });
     conn.once("error", () => settle(null));
   });
+}
+
+// Calls that run as long as they need to (a full sync of every account, a
+// digest over a mailbox): a fixed client-side timeout only abandons the reply
+// while the daemon keeps working, and then reports failure for work that is
+// actually happening.
+const UNBOUNDED_FNS = new Set([
+  "sync.force",
+  "sync.init",
+  "digest.run",
+  "monitor.run",
+  "inbox.run",
+  "cleanup.plan",
+  "cleanup.apply",
+]);
+// Slack between a caller's own deadline and ours, so the daemon's partial
+// result (timed_out:true) arrives before we give up on it.
+const TIMEOUT_MARGIN_MS = 15_000;
+
+function _callTimeoutMs(fullName, args) {
+  if (UNBOUNDED_FNS.has(fullName)) return 0;
+  const own = args && args.timeout_ms != null ? Number(args.timeout_ms) : NaN;
+  if (Number.isFinite(own)) {
+    if (own <= 0) return 0; // the caller asked for no limit
+    return Math.max(CALL_TIMEOUT_MS, own + TIMEOUT_MARGIN_MS);
+  }
+  return CALL_TIMEOUT_MS;
 }
 
 // Functions that mutate remote state. If a daemon RPC fails AFTER we've
@@ -173,11 +230,14 @@ function _shouldBypassDaemonForCall(fullName, args) {
   return false;
 }
 
-function _wrapNamespace(nsName, realObj) {
+// `load` returns the real namespace object; it runs on first property access so
+// building the proxies costs nothing.
+function _wrapNamespace(nsName, load) {
   const handler = {
     get(_, fname) {
       if (typeof fname !== "string") return undefined;
       if (fname === "then") return undefined; // not a thenable
+      const realObj = load();
       const direct = realObj && realObj[fname];
       // For non-function exports (constants etc.), pass straight through.
       if (typeof direct !== "function") return direct;
@@ -189,7 +249,7 @@ function _wrapNamespace(nsName, realObj) {
         const client = _shouldBypassDaemonForCall(fullName, args) ? null : await _maybeConnect();
         if (client) {
           try {
-            return await client.call(fullName, args);
+            return await client.call(fullName, args, _callTimeoutMs(fullName, args));
           } catch (e) {
             const msg = e && e.message ? e.message : String(e);
             // For mutating calls that aren't dry-run, refuse to retry
@@ -204,6 +264,12 @@ function _wrapNamespace(nsName, realObj) {
                 daemon_rpc_failed: true,
               };
             }
+            // A timeout means the daemon is still working on it. Re-running the
+            // same search in-process doubles the wait and the IMAP load, so
+            // report it; only an unreachable/broken daemon falls back.
+            if (e && e.code === "daemon_timeout") {
+              return { success: false, error: msg, error_code: "daemon_timeout" };
+            }
             if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mail-use: daemon call ${fullName} failed: ${msg}; falling back to direct\n`);
           }
         }
@@ -216,16 +282,18 @@ function _wrapNamespace(nsName, realObj) {
 
 function makeProxies() {
   return {
-    accounts: _wrapNamespace("accounts", realCore.accounts),
-    email: _wrapNamespace("email", realCore.email),
-    sync: _wrapNamespace("sync", realCore.sync),
-    imap: realCore.imap, // not RPC'd — internal helper only
-    smtp: realCore.smtp, // not RPC'd — internal helper only
-    digest: _wrapNamespace("digest", realWorkflows.digest || {}),
-    monitor: _wrapNamespace("monitor", realWorkflows.monitor || {}),
-    inbox: _wrapNamespace("inbox", realWorkflows.inbox || {}),
-    cleanup: _wrapNamespace("cleanup", realWorkflows.cleanup || {}),
+    accounts: _wrapNamespace("accounts", () => _core().accounts),
+    email: _wrapNamespace("email", () => _core().email),
+    sync: _wrapNamespace("sync", () => _core().sync),
+    // imap/smtp are not RPC'd — internal helpers only, loaded on first use.
+    get imap() { return _core().imap; },
+    get smtp() { return _core().smtp; },
+    digest: _wrapNamespace("digest", () => _workflows().digest || {}),
+    monitor: _wrapNamespace("monitor", () => _workflows().monitor || {}),
+    inbox: _wrapNamespace("inbox", () => _workflows().inbox || {}),
+    cleanup: _wrapNamespace("cleanup", () => _workflows().cleanup || {}),
   };
 }
 
-module.exports = { makeProxies, _shouldBypassDaemonForCall };
+module.exports = { makeProxies, _shouldBypassDaemonForCall, _callTimeoutMs, _maybeConnect };
+
