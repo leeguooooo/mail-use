@@ -3,6 +3,9 @@ const fs = require("fs");
 const { paths } = require("@mail-use/shared");
 const accounts = require("./accounts");
 const syncDb = require("../storage/sync_db");
+const { withImapClient } = require("./imap");
+const { _envelopeItem } = require("./email/items");
+const { _uidSetString, _uidsSortedDesc, _mapLimit, ACCOUNT_CONCURRENCY } = require("./email/internals");
 
 function _nowIso() {
   return new Date().toISOString();
@@ -72,6 +75,180 @@ function status() {
   };
 }
 
+// Newest N messages per folder kept in the cache window.
+const SYNC_WINDOW = 200;
+const SYNC_FOLDER = "INBOX";
+
+function _bigToString(v) {
+  return v === undefined || v === null ? "" : String(v);
+}
+
+// Talk to IMAP for one folder. Pure read; the caller writes the outcome.
+//
+// Incremental when the last pass recorded UIDVALIDITY + UIDNEXT, the server's
+// UIDVALIDITY still matches, and the cache holds rows for the folder:
+//   - envelopes are fetched only for UIDs >= the stored UIDNEXT (new mail);
+//   - flags of already-cached UIDs are refreshed with CHANGEDSINCE when the
+//     server does CONDSTORE (and skipped entirely when HIGHESTMODSEQ hasn't
+//     moved), else with a flags-only FETCH — a few bytes per message instead
+//     of a full envelope + bodystructure;
+//   - one UID SEARCH ALL lists what still exists, for expunge detection.
+// Otherwise (first sync, --full, or UIDVALIDITY changed) the newest
+// SYNC_WINDOW envelopes are fetched as before.
+async function _scanFolder(account, folder, prev, { full }) {
+  return withImapClient(account, async (client) => {
+    const st = await client.mailboxOpen(folder);
+    const uidValidity = _bigToString(st && st.uidValidity);
+    const uidNext = Number((st && st.uidNext) || 0);
+    const highestModseq = _bigToString(st && st.highestModseq);
+
+    let unreadCount = 0;
+    try {
+      const ss = await client.status(folder, { unseen: true });
+      if (ss && ss.unseen != null) unreadCount = Number(ss.unseen);
+    } catch (e) {
+      if (process.env.MAILBOX_DAEMON_DEBUG) process.stderr.write(`mail-use: STATUS UNSEEN failed for ${account.email}/${folder}: ${(e && e.message) || e}\n`);
+    }
+
+    const found = await client.search({ all: true }, { uid: true });
+    const serverUids = _uidsSortedDesc(Array.isArray(found) ? found : []);
+
+    const validityChanged = Boolean(prev.uidValidity && uidValidity && prev.uidValidity !== uidValidity);
+    const incremental = !full && !validityChanged && Boolean(prev.uidValidity) && uidValidity === prev.uidValidity
+      && prev.uidNext > 0 && prev.cachedUids.length > 0;
+
+    const toFetch = incremental
+      ? serverUids.filter((u) => u >= prev.uidNext).slice(0, SYNC_WINDOW)
+      : serverUids.slice(0, SYNC_WINDOW);
+
+    const newEmails = [];
+    if (toFetch.length) {
+      for await (const msg of client.fetch(
+        _uidSetString(toFetch),
+        { envelope: true, flags: true, internalDate: true, bodyStructure: true },
+        { uid: true }
+      )) {
+        const item = _envelopeItem(account, folder, msg, "imap_fetch");
+        item.flagged = Boolean(msg.flags && msg.flags.has("\\Flagged"));
+        newEmails.push(item);
+      }
+    }
+
+    // Flag refresh for messages already in the cache.
+    const flagUpdates = [];
+    let flagMode = "none";
+    if (incremental) {
+      const live = new Set(serverUids);
+      const cachedLive = prev.cachedUids.map(Number).filter((u) => live.has(u) && u < prev.uidNext);
+      if (cachedLive.length) {
+        let fetchOpts = null;
+        if (highestModseq && prev.highestModseq) {
+          if (highestModseq !== prev.highestModseq) {
+            fetchOpts = { uid: true, changedSince: BigInt(prev.highestModseq) };
+            flagMode = "condstore";
+          } else {
+            flagMode = "unchanged";
+          }
+        } else {
+          fetchOpts = { uid: true };
+          flagMode = "flags";
+        }
+        if (fetchOpts) {
+          for await (const msg of client.fetch(_uidSetString(cachedLive), { flags: true }, fetchOpts)) {
+            const flags = msg.flags || new Set([]);
+            flagUpdates.push({ uid: String(msg.uid), unread: !flags.has("\\Seen"), flagged: flags.has("\\Flagged") });
+          }
+        }
+      }
+    }
+
+    return {
+      mode: incremental ? "incremental" : "full",
+      flagMode,
+      validityChanged,
+      uidValidity,
+      uidNext,
+      highestModseq,
+      totalInFolder: Number((st && st.exists) || 0),
+      unreadCount,
+      serverUids,
+      newEmails,
+      flagUpdates,
+    };
+  }, { idempotent: true });
+}
+
+// Sync one account: 1 DB read, the IMAP pass, 1 write session (it used to be
+// a write, a read and another write, around a full re-fetch of 200 envelopes).
+async function _syncAccount(a, { dbPath, full }) {
+  const prev = await syncDb.getFolderSyncState({ dbPath, accountId: a.id, folder: SYNC_FOLDER });
+  const scan = await _scanFolder(a, SYNC_FOLDER, prev, { full });
+
+  const cachedBefore = new Set(prev.cachedUids.map(String));
+  let emailsDeleted = 0;
+  let emailsAdded = 0;
+  // Single write session per account: one DB open, one flush, one file
+  // lock. Prevents lost updates across concurrent CLI invocations. Orphans
+  // are computed under the lock from what is cached *now*, not from the
+  // pre-IMAP snapshot, so rows another process added meanwhile are judged on
+  // current data.
+  await syncDb.withWriteSession(dbPath, (s) => {
+    s.upsertAccount({ id: a.id, email: a.email, provider: a.provider || "custom" });
+    if (scan.validityChanged) {
+      // UIDVALIDITY changed: every cached UID now names a different (or no)
+      // message. Start the folder over.
+      emailsDeleted += s.clearFolder({ accountId: a.id, folder: SYNC_FOLDER });
+      cachedBefore.clear();
+    }
+    const folderId = s.upsertFolder({
+      accountId: a.id,
+      name: SYNC_FOLDER,
+      displayName: SYNC_FOLDER,
+      messageCount: scan.totalInFolder,
+      unreadCount: scan.unreadCount,
+      lastSyncIso: _nowIso(),
+      uidValidity: scan.uidValidity,
+      uidNext: scan.uidNext,
+      highestModseq: scan.highestModseq,
+    });
+    if (folderId) s.upsertEmails({ accountId: a.id, folderId, emails: scan.newEmails });
+    emailsAdded = scan.newEmails.filter((e) => !cachedBefore.has(String(e.uid))).length;
+
+    // Apply refreshed flags, grouped so each distinct state is one UPDATE.
+    // Fetched envelopes count too: upsertEmails leaves is_flagged alone (so a
+    // local `flag` survives), so the server's \Flagged is applied here.
+    const flagState = [
+      ...scan.flagUpdates,
+      ...scan.newEmails.map((e) => ({ uid: String(e.uid), unread: e.unread, flagged: e.flagged })),
+    ];
+    const groups = new Map();
+    for (const u of flagState) {
+      const key = `${u.unread ? 1 : 0}${u.flagged ? 1 : 0}`;
+      if (!groups.has(key)) groups.set(key, { unread: u.unread, flagged: u.flagged, uids: [] });
+      groups.get(key).uids.push(u.uid);
+    }
+    for (const g of groups.values()) {
+      s.updateFlags({ accountId: a.id, folder: SYNC_FOLDER, uids: g.uids, unread: g.unread, flagged: g.flagged });
+    }
+
+    // Expunged on the server since the last pass.
+    const live = new Set(scan.serverUids.map(String));
+    const orphans = s.getUids({ accountId: a.id, folder: SYNC_FOLDER }).filter((uid) => !live.has(String(uid)));
+    if (orphans.length) emailsDeleted += s.removeEmails({ accountId: a.id, folder: SYNC_FOLDER, uids: orphans });
+  });
+
+  return {
+    success: true,
+    account_id: a.id,
+    folders_synced: 1,
+    mode: scan.mode,
+    emails_added: emailsAdded,
+    emails_updated: scan.flagUpdates.length,
+    emails_deleted: emailsDeleted,
+    total_in_folder: scan.totalInFolder,
+  };
+}
+
 async function force({ account_id = "", full = false } = {}) {
   const pc = paths.getPathConfig();
   // Ensure parent dir exists. Don't pre-create a 0-byte file: sql.js treats
@@ -92,63 +269,20 @@ async function force({ account_id = "", full = false } = {}) {
 
   const started = Date.now();
   const { statePath, state } = _loadSyncState();
+  if (!state.accounts) state.accounts = {};
 
-  const results = [];
-  for (const a of target) {
-    const email = require("./email");
+  // Accounts sync concurrently (bounded). Their IMAP work overlaps; the
+  // cache writes still serialise on the DB file lock.
+  const results = await _mapLimit(target, ACCOUNT_CONCURRENCY, async (a) => {
     try {
-      const listRes = await email.listEmails({ limit: 200, offset: 0, unread_only: false, folder: "INBOX", account_id: a.id, use_cache: false, include_server_uids: true });
-
-      // Single write session per account: one DB open, one flush, one file
-      // lock. Prevents lost updates across concurrent CLI invocations and
-      // the within-account upsertAccount → upsertFolder → upsertEmails race.
-      await syncDb.withWriteSession(pc.emailSyncDb, (s) => {
-        s.upsertAccount({ id: a.id, email: a.email, provider: a.provider || "custom" });
-        const folderId = s.upsertFolder({
-          accountId: a.id,
-          name: "INBOX",
-          displayName: "INBOX",
-          messageCount: listRes.total_in_folder || 0,
-          unreadCount: listRes.unread_count || 0,
-          lastSyncIso: _nowIso(),
-        });
-        if (folderId) {
-          s.upsertEmails({ accountId: a.id, folderId, emails: listRes.emails || [] });
-        }
-      });
-
-      let emailsDeleted = 0;
-      if (listRes.all_uids_are_complete && Array.isArray(listRes.server_uids)) {
-        const serverUids = new Set(listRes.server_uids.map((uid) => String(uid)));
-        const cachedUids = await syncDb.getEmailUIDsFromCache({
-          dbPath: pc.emailSyncDb,
-          accountId: a.id,
-          folder: "INBOX",
-        });
-        const orphanedUids = cachedUids.filter((uid) => !serverUids.has(String(uid)));
-        if (orphanedUids.length) {
-          const removed = await syncDb.removeEmailsFromCache({
-            dbPath: pc.emailSyncDb,
-            accountId: a.id,
-            folder: "INBOX",
-            uids: orphanedUids,
-          });
-          if (removed && removed.success) emailsDeleted = orphanedUids.length;
-        }
-      }
-
-      const per = {
-        last_sync: _nowIso(),
-        total_emails: listRes.total_in_folder || 0,
-        sync_status: listRes.success ? "ok" : "error",
-      };
-      if (!state.accounts) state.accounts = {};
-      state.accounts[a.id] = per;
-      results.push({ success: true, account_id: a.id, folders_synced: 1, emails_added: 0, emails_updated: 0, emails_deleted: emailsDeleted });
+      const r = await _syncAccount(a, { dbPath: pc.emailSyncDb, full: Boolean(full) });
+      state.accounts[a.id] = { last_sync: _nowIso(), total_emails: r.total_in_folder || 0, sync_status: "ok" };
+      delete r.total_in_folder;
+      return r;
     } catch (e) {
-      results.push({ success: false, account_id: a.id, error: e && e.message ? e.message : "sync failed" });
+      return { success: false, account_id: a.id, error: e && e.message ? e.message : "sync failed" };
     }
-  }
+  });
 
   state.last_sync_times = state.last_sync_times || { incremental: null, full: null };
   state.last_sync_times[full ? "full" : "incremental"] = _nowIso();
@@ -158,7 +292,15 @@ async function force({ account_id = "", full = false } = {}) {
   if (account_id) {
     const one = results[0] || { success: false, error: "No account matched" };
     if (!one.success) return { success: false, error: one.error || "sync failed" };
-    return { success: true, account_id: one.account_id, folders_synced: one.folders_synced || 0, emails_added: 0, emails_updated: 0, emails_deleted: one.emails_deleted || 0 };
+    return {
+      success: true,
+      account_id: one.account_id,
+      folders_synced: one.folders_synced || 0,
+      mode: one.mode,
+      emails_added: one.emails_added || 0,
+      emails_updated: one.emails_updated || 0,
+      emails_deleted: one.emails_deleted || 0,
+    };
   }
 
   const okCount = results.filter((r) => r.success).length;
@@ -166,8 +308,8 @@ async function force({ account_id = "", full = false } = {}) {
     success: okCount === results.length,
     accounts_synced: okCount,
     total_accounts: results.length,
-    emails_added: 0,
-    emails_updated: 0,
+    emails_added: results.reduce((sum, r) => sum + Number(r.emails_added || 0), 0),
+    emails_updated: results.reduce((sum, r) => sum + Number(r.emails_updated || 0), 0),
     emails_deleted: results.reduce((sum, r) => sum + Number(r.emails_deleted || 0), 0),
     sync_time,
     results,

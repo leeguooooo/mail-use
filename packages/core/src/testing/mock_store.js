@@ -70,6 +70,37 @@ function _ensureState() {
   return globalThis.__MAILBOX_MOCK_STATE;
 }
 
+// Every IMAP command the mock client receives, in order. Tests use it to
+// assert round-trip counts (e.g. "a batch delete issues one MOVE").
+function logMockCall(entry) {
+  const st = _ensureState();
+  if (!st.calls) st.calls = [];
+  st.calls.push(entry);
+}
+
+function getMockCalls() {
+  const st = _ensureState();
+  return st.calls || [];
+}
+
+function clearMockCalls() {
+  const st = _ensureState();
+  st.calls = [];
+}
+
+// Failure injection: setMockFailure("messageMove", (range) => bool) makes the
+// mock throw for a command whose UID range matches.
+function setMockFailure(op, predicate) {
+  const st = _ensureState();
+  if (!st.failures) st.failures = {};
+  st.failures[op] = predicate;
+}
+
+function getMockFailure(op) {
+  const st = _ensureState();
+  return st.failures ? st.failures[op] : null;
+}
+
 function resetMockState() {
   delete globalThis.__MAILBOX_MOCK_STATE;
   _ensureState();
@@ -98,6 +129,11 @@ function listMailboxNames(accountId) {
 }
 
 module.exports = {
+  logMockCall,
+  getMockCalls,
+  clearMockCalls,
+  setMockFailure,
+  getMockFailure,
   resetMockState,
   getMockAccount,
   listMockAccounts,

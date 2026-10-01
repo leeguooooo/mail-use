@@ -7,9 +7,15 @@ const { _dateOnly, _isoDate, _expandRelativeDate, _parseDateInput } = require(".
 const { _deadlineExceeded, _raceTimeout } = require("./email/deadline");
 const {
   _normalizeFolder, _gid, _listMailboxes, _selectableFoldersFor,
-  _uidsSortedDesc, _compareDatesDesc,
+  _uidsSortedDesc, _compareDatesDesc, _mapLimit, ACCOUNT_CONCURRENCY,
 } = require("./email/internals");
-const { _trashFolderCandidates, _findTrashFolder, _uidExistsInFolder } = require("./email/trash");
+const { _trashFolderCandidates, _findTrashFolder, _existingUids } = require("./email/trash");
+const { _runBatched, _parseUidList } = require("./email/batch");
+const { _envelopeItem } = require("./email/items");
+const {
+  MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_TOTAL, PREVIEW_SOURCE_QUERY,
+  _safeParse, _fetchFullMessages, _loadParsedMessage, _previewFromSource,
+} = require("./email/message_source");
 const {
   _outgoingAttachments, _outgoingAttachmentPreview,
   _splitAddressList, _addressEmail, _dedupeAddresses, _buildReferences,
@@ -70,21 +76,6 @@ function _humanAge(sec) {
   return `${Math.round(sec / 86400)}d`;
 }
 
-// Hard caps to defend against hostile mail. Override via env if needed.
-const MAX_MESSAGE_BYTES = Number(process.env.MAILBOX_MAX_MESSAGE_BYTES || 50 * 1024 * 1024); // 50 MiB
-const MAX_ATTACHMENT_BYTES = Number(process.env.MAILBOX_MAX_ATTACHMENT_BYTES || 25 * 1024 * 1024); // 25 MiB per file
-const MAX_ATTACHMENTS_TOTAL = Number(process.env.MAILBOX_MAX_ATTACHMENTS_BYTES || 100 * 1024 * 1024); // 100 MiB total
-
-async function _safeParse(source) {
-  if (source && Buffer.isBuffer(source) && source.length > MAX_MESSAGE_BYTES) {
-    throw new Error(`Message exceeds MAILBOX_MAX_MESSAGE_BYTES (${MAX_MESSAGE_BYTES})`);
-  }
-  const { simpleParser } = require("mailparser");
-  return simpleParser(source, {
-    maxHtmlLengthToParse: MAX_MESSAGE_BYTES,
-  });
-}
-
 async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOnly, since, before, previewChars = 0, includeServerUids = false, includeAccountUnread = false }) {
   const openFolder = _normalizeFolder(folder);
   return withImapClient(account, async (client) => {
@@ -130,38 +121,12 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
         flags: true,
         internalDate: true,
         bodyStructure: true,
-        source: wantPreview,
+        source: wantPreview ? PREVIEW_SOURCE_QUERY : false,
       },
       { uid: true }
     )) {
-      const env = msg.envelope || {};
-      const flags = msg.flags || new Set([]);
-      const unread = !flags.has("\\Seen");
-      const item = {
-        id: String(msg.uid),
-        uid: String(msg.uid),
-        gid: _gid(account.id, openFolder, msg.uid),
-        message_id: env.messageId || "",
-        subject: env.subject || "",
-        from: firstAddress(env.from),
-        date: formatDateTime(msg.internalDate || env.date),
-        unread,
-        has_attachments: hasAttachmentsFromBodyStructure(msg.bodyStructure),
-        account: account.email,
-        account_id: account.id,
-        folder: openFolder,
-        source: "imap_fetch",
-      };
-      if (wantPreview && msg.source) {
-        try {
-          const parsed = await _safeParse(msg.source);
-          const txt = String(parsed.text || "").replace(/\s+/g, " ").trim();
-          item.preview = txt.slice(0, previewChars);
-          if (txt.length > previewChars) item.preview_truncated = true;
-        } catch {
-          item.preview = "";
-        }
-      }
+      const item = _envelopeItem(account, openFolder, msg, "imap_fetch");
+      if (wantPreview && msg.source) Object.assign(item, await _previewFromSource(msg.source, previewChars));
       emails.push(item);
     }
 
@@ -352,7 +317,9 @@ async function listEmails({
       };
     }
 
-    for (const acc of list) {
+    // Accounts are independent connections: fetch them concurrently (bounded)
+    // instead of one after another. Result order still follows the config.
+    const rows = await _mapLimit(list, ACCOUNT_CONCURRENCY, async (acc) => {
       try {
         const r = await _fetchEmailsForAccount({
           account: acc,
@@ -366,11 +333,12 @@ async function listEmails({
           includeServerUids,
           includeAccountUnread,
         });
-        results.push({ account: acc, ...r });
+        return { account: acc, ...r };
       } catch (e) {
-        results.push({ account: acc, success: false, error: e && e.message ? e.message : "fetch failed" });
+        return { account: acc, success: false, error: e && e.message ? e.message : "fetch failed" };
       }
-    }
+    });
+    results.push(...rows);
   }
 
   const ok = results.filter((r) => r.success);
@@ -603,7 +571,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
       if (slice.length > 0) {
         for await (const msg of client.fetch(
           slice,
-          { envelope: true, flags: true, internalDate: true, bodyStructure: true, source: wantPreview },
+          { envelope: true, flags: true, internalDate: true, bodyStructure: true, source: wantPreview ? PREVIEW_SOURCE_QUERY : false },
           { uid: true }
         )) {
           // Cooperative bound: a broken-search provider (QQ/163) may stream
@@ -637,16 +605,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
             folder: folderPath,
             preview: "",
           };
-          if (wantPreview && msg.source) {
-            try {
-              const parsed = await _safeParse(msg.source);
-              const txt = String(parsed.text || "").replace(/\s+/g, " ").trim();
-              item.preview = txt.slice(0, previewChars);
-              if (txt.length > previewChars) item.preview_truncated = true;
-            } catch {
-              // ignore preview parse failures
-            }
-          }
+          if (wantPreview && msg.source) Object.assign(item, await _previewFromSource(msg.source, previewChars));
           emails.push(item);
         }
       }
@@ -662,14 +621,16 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
 
   let timed_out = false;
   const pending_accounts = [];
-  for (const acc of targets) {
+  // Accounts are searched concurrently (bounded); each runs on its own
+  // connection. Outcomes are collected per account and flattened in config
+  // order afterwards, so the output doesn't depend on which finished first.
+  const outcomes = await _mapLimit(targets, ACCOUNT_CONCURRENCY, async (acc) => {
     // Bound the whole search: a cross-account / --folder all scan over slow
     // (client-side-filtered) providers could otherwise run unbounded. On
     // timeout we stop scanning and return whatever we have so far.
     if (_deadlineExceeded(started, timeoutMs)) {
       timed_out = true;
-      pending_accounts.push(acc.id || acc.email || "");
-      continue;
+      return { pending: true };
     }
     try {
       // The client this account's scan is running on, so a timeout can close
@@ -717,15 +678,23 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
         abandoned = true;
         if (workClient) abandonClient(workClient);
         timed_out = true;
-        pending_accounts.push(acc.id || acc.email || "");
         return { success: true, total_found: 0, emails: [], account_timed_out: true };
       });
-      perAccount.push({ account: acc, ...r });
+      return { row: { account: acc, ...r }, pending: Boolean(r && r.account_timed_out) };
     } catch (e) {
-      failed_accounts.push({ account: acc.email || "", account_id: acc.id || "", error: e && e.message ? e.message : "search failed" });
-      perAccount.push({ account: acc, success: false, error: e && e.message ? e.message : "search failed", total_found: 0, emails: [] });
+      const error = e && e.message ? e.message : "search failed";
+      return {
+        failed: { account: acc.email || "", account_id: acc.id || "", error },
+        row: { account: acc, success: false, error, total_found: 0, emails: [] },
+      };
     }
-  }
+  });
+  outcomes.forEach((o, i) => {
+    const acc = targets[i];
+    if (o.pending) pending_accounts.push(acc.id || acc.email || "");
+    if (o.failed) failed_accounts.push(o.failed);
+    if (o.row) perAccount.push(o.row);
+  });
 
   const allEmails = perAccount.flatMap((r) => (r && r.success ? r.emails || [] : []));
   allEmails.sort((a, b) => _compareDatesDesc(a.date, b.date));
@@ -756,6 +725,47 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
   };
 }
 
+// The per-message fields show/showEmails report, from a fetched message and
+// its parsed source.
+function _messageFields(account, openFolder, msg, parsed, { body_max_len, html_max_len, include_html, strip_urls }) {
+  const flags = msg.flags || new Set([]);
+  const attachments = (parsed.attachments || []).map((a) => ({
+    filename: a.filename || "",
+    size: a.size || 0,
+    content_type: a.contentType || "application/octet-stream",
+    ...attachmentFlags(a),
+  }));
+  const composed = _composeBody({
+    text: parsed.text,
+    html: parsed.html,
+    body_max_len,
+    html_max_len,
+    include_html,
+    strip_urls,
+  });
+  return {
+    id: String(msg.uid),
+    gid: _gid(account.id, openFolder, msg.uid),
+    from: parsed.from ? parsed.from.text || "" : firstAddress(msg.envelope && msg.envelope.from),
+    to: parsed.to ? parsed.to.text || "" : firstAddress(msg.envelope && msg.envelope.to),
+    cc: parsed.cc ? parsed.cc.text || "" : "",
+    subject: parsed.subject || (msg.envelope ? msg.envelope.subject : ""),
+    date: formatDateTime(parsed.date || msg.internalDate),
+    ...composed,
+    has_html: Boolean(parsed.html),
+    attachments,
+    attachment_count: attachments.length,
+    real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
+    has_attachments: attachments.some((x) => x.is_real_attachment),
+    unread: !flags.has("\\Seen"),
+    message_id: parsed.messageId || (msg.envelope ? msg.envelope.messageId : ""),
+    in_reply_to: parsed.inReplyTo || "",
+    references: Array.isArray(parsed.references) ? parsed.references.join(" ") : (parsed.references || ""),
+    folder: openFolder,
+    list_unsubscribe: _extractListUnsubscribe(parsed),
+  };
+}
+
 async function showEmail({
   email_id,
   folder = "INBOX",
@@ -774,19 +784,6 @@ async function showEmail({
   const openFolder = _normalizeFolder(folder);
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    const msg = await client.fetchOne(
-      Number(id),
-      {
-        envelope: true,
-        flags: true,
-        internalDate: true,
-        bodyStructure: true,
-        source: true,
-      },
-      { uid: true }
-    );
-    if (!msg) return { success: false, error: `Email not found: ${id}` };
-
     if (_isTestMode()) {
       const { getMailbox } = require("../testing/mock_store");
       const mb = getMailbox(acc.account.id, openFolder);
@@ -834,53 +831,17 @@ async function showEmail({
       };
     }
 
-    const parsed = await _safeParse(msg.source);
-    const flags = msg.flags || new Set([]);
-    const unread = !flags.has("\\Seen");
-
-    const attachments = (parsed.attachments || []).map((a) => ({
-      filename: a.filename || "",
-      size: a.size || 0,
-      content_type: a.contentType || "application/octet-stream",
-      ...attachmentFlags(a),
-    }));
-
-    const composed = _composeBody({
-      text: parsed.text,
-      html: parsed.html,
-      body_max_len,
-      html_max_len,
-      include_html,
-      strip_urls,
-    });
-
+    // Size is checked before the source is downloaded (see _fetchFullMessages).
+    const loaded = await _loadParsedMessage(client, id, id);
+    if (!loaded.success) return loaded;
+    const fields = _messageFields(acc.account, openFolder, loaded.msg, loaded.parsed, { body_max_len, html_max_len, include_html, strip_urls });
     return {
       success: true,
-      id: String(msg.uid),
-      gid: _gid(acc.account.id, openFolder, msg.uid),
       requested_id: String(id),
-      from: parsed.from ? parsed.from.text || "" : firstAddress(msg.envelope && msg.envelope.from),
-      to: parsed.to ? parsed.to.text || "" : firstAddress(msg.envelope && msg.envelope.to),
-      cc: parsed.cc ? parsed.cc.text || "" : "",
-      subject: parsed.subject || (msg.envelope ? msg.envelope.subject : ""),
-      date: formatDateTime(parsed.date || msg.internalDate),
-      ...composed,
-      has_html: Boolean(parsed.html),
-      attachments,
-      attachment_count: attachments.length,
-      real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
-      has_attachments: attachments.some((x) => x.is_real_attachment),
-      unread,
-      message_id: parsed.messageId || (msg.envelope ? msg.envelope.messageId : ""),
-      in_reply_to: parsed.inReplyTo || "",
-      references: Array.isArray(parsed.references)
-        ? parsed.references.join(" ")
-        : (parsed.references || ""),
-      folder: openFolder,
+      ...fields,
       account: acc.account.email,
       account_id: acc.account.id,
       from_cache: false,
-      list_unsubscribe: _extractListUnsubscribe(parsed),
     };
   }, { idempotent: true });
 }
@@ -902,63 +863,10 @@ async function showEmails({
   const acc = accounts.getAccountByIdOrEmail(account_id);
   if (!acc.success) return acc;
 
+  const opts = { body_max_len, html_max_len, include_html, strip_urls };
   const openFolder = _normalizeFolder(folder);
   return withImapClient(acc.account, async (client) => {
-    await client.mailboxOpen(openFolder);
-    const emails = [];
-    const failed_ids = [];
-    for (const id of ids) {
-      try {
-        const msg = await client.fetchOne(
-          Number(id),
-          { envelope: true, flags: true, internalDate: true, bodyStructure: true, source: true },
-          { uid: true }
-        );
-        if (!msg) {
-          failed_ids.push({ id, error: "not_found" });
-          continue;
-        }
-        const parsed = await _safeParse(msg.source);
-        const flags = msg.flags || new Set([]);
-        const attachments = (parsed.attachments || []).map((a) => ({
-          filename: a.filename || "",
-          size: a.size || 0,
-          content_type: a.contentType || "application/octet-stream",
-          ...attachmentFlags(a),
-        }));
-        const composed = _composeBody({
-          text: parsed.text,
-          html: parsed.html,
-          body_max_len,
-          html_max_len,
-          include_html,
-          strip_urls,
-        });
-        emails.push({
-          id: String(msg.uid),
-          gid: _gid(acc.account.id, openFolder, msg.uid),
-          folder: openFolder,
-          from: parsed.from ? parsed.from.text || "" : firstAddress(msg.envelope && msg.envelope.from),
-          to: parsed.to ? parsed.to.text || "" : firstAddress(msg.envelope && msg.envelope.to),
-          cc: parsed.cc ? parsed.cc.text || "" : "",
-          subject: parsed.subject || (msg.envelope ? msg.envelope.subject : ""),
-          date: formatDateTime(parsed.date || msg.internalDate),
-          ...composed,
-          has_html: Boolean(parsed.html),
-          attachments,
-          attachment_count: attachments.length,
-          real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
-          has_attachments: attachments.some((x) => x.is_real_attachment),
-          unread: !flags.has("\\Seen"),
-          message_id: parsed.messageId || (msg.envelope ? msg.envelope.messageId : ""),
-          in_reply_to: parsed.inReplyTo || "",
-          references: Array.isArray(parsed.references) ? parsed.references.join(" ") : (parsed.references || ""),
-          list_unsubscribe: _extractListUnsubscribe(parsed),
-        });
-      } catch (e) {
-        failed_ids.push({ id, error: e && e.message ? e.message : "fetch failed" });
-      }
-    }
+    const { emails, failed_ids } = await _showFromFolder(client, acc.account, openFolder, ids, opts);
     return {
       success: failed_ids.length === 0,
       emails,
@@ -971,6 +879,51 @@ async function showEmails({
   }, { idempotent: true });
 }
 
+// Fetch `ids` from one folder on an already-connected client.
+async function _showFromFolder(client, account, openFolder, ids, opts) {
+  await client.mailboxOpen(openFolder);
+  const emails = [];
+  const failed_ids = [];
+  const { valid, invalid } = _parseUidList(ids);
+  for (const id of invalid) failed_ids.push({ id, error: "not_found" });
+  // Two FETCHes for the whole set (metadata+size, then sources), not one
+  // FETCH per uid.
+  for await (const r of _fetchFullMessages(client, valid)) {
+    if (r.error) {
+      failed_ids.push({ id: String(r.uid), error: r.error });
+      continue;
+    }
+    try {
+      const parsed = await _safeParse(r.msg.source);
+      emails.push(_messageFields(account, openFolder, r.msg, parsed, opts));
+    } catch (e) {
+      failed_ids.push({ id: String(r.uid), error: e && e.message ? e.message : "fetch failed" });
+    }
+  }
+  return { emails, failed_ids };
+}
+
+function _syncDbPath() {
+  try {
+    return paths.getPathConfig().emailSyncDb;
+  } catch {
+    return "";
+  }
+}
+
+// Best-effort cache update: all of one operation's changes go through a
+// single write session (one lock, one read and one rewrite of the DB file).
+// A cache failure never fails the IMAP operation that already happened.
+async function _cacheWrite(fn) {
+  const dbPath = _syncDbPath();
+  if (!dbPath) return;
+  try {
+    await syncDb.withWriteSession(dbPath, fn);
+  } catch (e) {
+    if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: cache update failed: ${(e && e.message) || e}\n`);
+  }
+}
+
 // Resolve which folder an email lives in: an explicit folder wins, otherwise the
 // local cache is consulted, otherwise INBOX. Lets `show` open the right mailbox
 // without the caller remembering each email's folder.
@@ -978,15 +931,10 @@ async function resolveEmailFolder({ account_id = "", uid = "", folder = "" } = {
   if (folder) return _normalizeFolder(folder);
   const acc = accounts.getAccountByIdOrEmail(account_id);
   const accId = acc && acc.success ? acc.account.id : account_id;
-  let dbPath = "";
-  try {
-    dbPath = paths.getPathConfig().emailSyncDb;
-  } catch {
-    dbPath = "";
-  }
+  const dbPath = _syncDbPath();
   if (dbPath && uid) {
     try {
-      const f = await require("../storage/sync_db").lookupFolderForUid({ dbPath, accountId: accId, uid: String(uid) });
+      const f = await syncDb.lookupFolderForUid({ dbPath, accountId: accId, uid: String(uid) });
       if (f) return f;
     } catch {
       /* ignore */
@@ -997,9 +945,9 @@ async function resolveEmailFolder({ account_id = "", uid = "", folder = "" } = {
 
 // Folder-aware batch show. refs: [{ id, folder }]. A ref's folder may come from a
 // 3-part gid; when absent it is resolved from the local cache, then falls back to
-// INBOX. Ids are grouped by folder and each folder is fetched via showEmails, so
-// `show` works on results that span folders (e.g. after `search --folder all`)
-// without the caller passing --folder per email.
+// INBOX. Ids are grouped by folder and fetched folder by folder over one IMAP
+// connection, so `show` works on results that span folders (e.g. after
+// `search --folder all`) without the caller passing --folder per email.
 async function showEmailsResolved({ refs = [], account_id = "", ...opts } = {}) {
   const list = (Array.isArray(refs) ? refs : [])
     .map((r) => ({ id: String((r && r.id) || "").trim(), folder: (r && r.folder) || "" }))
@@ -1010,35 +958,56 @@ async function showEmailsResolved({ refs = [], account_id = "", ...opts } = {}) 
   if (!acc.success) return acc;
 
   // Resolve a folder for every ref (gid folder -> cache -> INBOX), then group.
+  // Refs without a folder are looked up in one DB open, not one per ref (each
+  // of which also re-read auth.json and the config).
+  const unresolved = list.filter((r) => !r.folder).map((r) => r.id);
+  let cached = new Map();
+  const dbPath = _syncDbPath();
+  if (unresolved.length && dbPath) {
+    try {
+      cached = await syncDb.lookupFoldersForUids({ dbPath, accountId: acc.account.id, uids: unresolved });
+    } catch {
+      cached = new Map();
+    }
+  }
   const byFolder = new Map();
   for (const r of list) {
-    const folder = await resolveEmailFolder({ account_id: acc.account.id, uid: r.id, folder: r.folder });
+    const folder = r.folder ? _normalizeFolder(r.folder) : (cached.get(r.id) || "INBOX");
     if (!byFolder.has(folder)) byFolder.set(folder, []);
     byFolder.get(folder).push(r.id);
   }
 
+  const showOpts = {
+    body_max_len: opts.body_max_len || 0,
+    html_max_len: opts.html_max_len || 0,
+    include_html: opts.include_html === undefined ? true : opts.include_html,
+    strip_urls: Boolean(opts.strip_urls),
+  };
   const emails = [];
   const failed_ids = [];
-  for (const [folder, ids] of byFolder) {
-    let res;
-    try {
-      res = await showEmails({ email_ids: ids, folder, account_id, ...opts });
-    } catch (e) {
-      // A folder that can't be opened (stale/renamed/deleted) must not sink the
-      // whole batch — degrade that group to failed_ids and keep other folders.
-      const msg = e && e.message ? e.message : "fetch failed";
-      for (const id of ids) failed_ids.push({ id, error: msg, folder });
-      continue;
-    }
-    if (res && res.success === false && !Array.isArray(res.emails)) {
-      // Soft per-group error (e.g. mailboxOpen returned an error object): record
-      // it for this group's ids rather than aborting the whole resolve.
-      const msg = res.error || "fetch failed";
-      for (const id of ids) failed_ids.push({ id, error: msg, folder });
-      continue;
-    }
-    if (res && Array.isArray(res.emails)) emails.push(...res.emails);
-    if (res && Array.isArray(res.failed_ids)) failed_ids.push(...res.failed_ids);
+  const fail = (ids, e, folder) => {
+    const msg = (e && e.message) || "fetch failed";
+    for (const id of ids) failed_ids.push({ id, error: msg, folder });
+  };
+  try {
+    await withImapClient(acc.account, async (client) => {
+      for (const [folder, ids] of byFolder) {
+        try {
+          const res = await _showFromFolder(client, acc.account, folder, ids, showOpts);
+          emails.push(...res.emails);
+          failed_ids.push(...res.failed_ids);
+        } catch (e) {
+          // A folder that can't be opened (stale/renamed/deleted) must not
+          // sink the whole batch — degrade that group to failed_ids and keep
+          // the other folders.
+          fail(ids, e, folder);
+        }
+      }
+    }, { idempotent: true });
+  } catch (e) {
+    // Connection-level failure: every group not yet reported fails with it.
+    const reported = new Set([...emails.map((x) => x.id), ...failed_ids.map((x) => String(x.id))]);
+    for (const [folder, ids] of byFolder) fail(ids.filter((id) => !reported.has(String(id))), e, folder);
   }
 
   return {
@@ -1074,32 +1043,24 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    const uids = ids.map((x) => Number(x));
-    const results = [];
-    for (const uid of uids) {
-      try {
-        if (markAs === "read") await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-        else await client.messageFlagsRemove(uid, ["\\Seen"], { uid: true });
-        results.push({ success: true, email_id: String(uid), folder: openFolder, account_id: acc.account.id });
-      } catch (e) {
-        results.push({ success: false, email_id: String(uid), folder: openFolder, account_id: acc.account.id, error: e && e.message ? e.message : "failed" });
-      }
-    }
+    // One UID STORE for the whole set (per chunk), not one per uid.
+    const { valid } = _parseUidList(ids);
+    const outcome = await _runBatched(valid, (range) => (markAs === "read"
+      ? client.messageFlagsAdd(range, ["\\Seen"], { uid: true })
+      : client.messageFlagsRemove(range, ["\\Seen"], { uid: true })));
+    const results = ids.map((raw) => {
+      const n = Number(raw);
+      const base = { email_id: outcome.has(n) ? String(n) : String(raw), folder: openFolder, account_id: acc.account.id };
+      if (!outcome.has(n)) return { success: false, ...base, error: "Invalid email_id" };
+      const err = outcome.get(n);
+      return err ? { success: false, ...base, error: err } : { success: true, ...base };
+    });
     const marked = results.filter((r) => r.success).length;
     if (marked > 0) {
       const successfulUids = results.filter((r) => r.success).map((r) => r.email_id);
-      const dbPath = paths.getPathConfig().emailSyncDb;
-      await syncDb.updateEmailFlags({
-        dbPath,
-        accountId: acc.account.id,
-        folder: openFolder,
-        uids: successfulUids,
-        unread: markAs === "unread",
-      });
-      await syncDb.invalidateFolderUnreadCount({
-        dbPath,
-        accountId: acc.account.id,
-        folder: openFolder,
+      await _cacheWrite((s) => {
+        s.updateFlags({ accountId: acc.account.id, folder: openFolder, uids: successfulUids, unread: markAs === "unread" });
+        s.invalidateUnread({ accountId: acc.account.id, folder: openFolder });
       });
     }
     return {
@@ -1134,8 +1095,6 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    const uids = ids.map((x) => Number(x));
-    const results = [];
 
     let trashName = "";
     async function ensureTrashName() {
@@ -1151,55 +1110,59 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
       }
     }
 
-    for (const uid of uids) {
+    // Round trips for N uids: one UID SEARCH for existence and one MOVE /
+    // EXPUNGE for the whole set (per 500-uid chunk), plus a SELECT + SEARCH of
+    // the trash only when some uids were already gone. It used to be four
+    // per uid (SELECT, FETCH, SELECT, MOVE).
+    const { valid } = _parseUidList(ids);
+    const existing = await _existingUids(client, valid);
+    const present = valid.filter((u) => existing.has(u));
+    const outcome = await _runBatched(present, (range) => (permanent
+      ? client.messageDelete(range, { uid: true })
+      : client.messageMove(range, trashName, { uid: true })));
+
+    // Already-gone uids: a retried delete whose first attempt went through
+    // shows up in the trash, which counts as success.
+    const missing = [...new Set(valid.filter((u) => !existing.has(u)))];
+    let inTrash = new Set();
+    let existingTrashName = "";
+    if (missing.length) {
       try {
-        const sourceExists = await _uidExistsInFolder(client, openFolder, uid);
-        if (!sourceExists) {
-          let foundInTrash = false;
-          let existingTrashName = "";
-          try {
-            existingTrashName = await ensureTrashName();
-            foundInTrash = existingTrashName !== openFolder && await _uidExistsInFolder(client, existingTrashName, uid);
-          } catch {
-            foundInTrash = false;
-          }
-          if (foundInTrash) {
-            results.push({
-              success: true,
-              email_id: String(uid),
-              folder: existingTrashName,
-              account_id: acc.account.id,
-              already_deleted: true,
-            });
-          } else {
-            results.push({
-              success: false,
-              email_id: String(uid),
-              folder: openFolder,
-              account_id: acc.account.id,
-              error: "Email not found in source folder or trash",
-            });
-          }
-          continue;
+        existingTrashName = await ensureTrashName();
+        if (existingTrashName !== openFolder) {
+          await client.mailboxOpen(existingTrashName);
+          inTrash = await _existingUids(client, missing);
         }
-        await client.mailboxOpen(openFolder);
-        if (permanent) await client.messageDelete(uid, { uid: true });
-        else await client.messageMove(uid, trashName, { uid: true });
-        results.push({ success: true, email_id: String(uid), folder: openFolder, account_id: acc.account.id });
-      } catch (e) {
-        results.push({ success: false, email_id: String(uid), folder: openFolder, account_id: acc.account.id, error: e && e.message ? e.message : "failed" });
+      } catch {
+        inTrash = new Set();
       }
     }
+
+    const results = ids.map((raw) => {
+      const n = Number(raw);
+      if (outcome.has(n)) {
+        const err = outcome.get(n);
+        return err
+          ? { success: false, email_id: String(n), folder: openFolder, account_id: acc.account.id, error: err }
+          : { success: true, email_id: String(n), folder: openFolder, account_id: acc.account.id };
+      }
+      if (inTrash.has(n)) {
+        return { success: true, email_id: String(n), folder: existingTrashName, account_id: acc.account.id, already_deleted: true };
+      }
+      return {
+        success: false,
+        email_id: Number.isInteger(n) && n > 0 ? String(n) : String(raw),
+        folder: openFolder,
+        account_id: acc.account.id,
+        error: Number.isInteger(n) && n > 0 ? "Email not found in source folder or trash" : "Invalid email_id",
+      };
+    });
     const deleted = results.filter((r) => r.success).length;
     if (deleted > 0) {
       // UIDs are per-folder: scope the removal to the folder we deleted from,
       // or the same uid in another folder vanishes from the cache too.
-      await syncDb.removeEmailsFromCache({
-        dbPath: paths.getPathConfig().emailSyncDb,
-        accountId: acc.account.id,
-        folder: openFolder,
-        uids: results.filter((r) => r.success).map((r) => r.email_id),
-      });
+      const removed = results.filter((r) => r.success).map((r) => r.email_id);
+      await _cacheWrite((s) => s.removeEmails({ accountId: acc.account.id, folder: openFolder, uids: removed }));
     }
     return {
       success: deleted === results.length,
@@ -1325,17 +1288,30 @@ async function replyEmail({ email_id, body, reply_all = false, folder = "INBOX",
 }
 
 async function forwardEmail({ email_id, to, body = "", folder = "INBOX", no_attachments = false, account_id = "", dry_run = false } = {}) {
-  const detail = await showEmail({ email_id, folder, account_id });
-  if (!detail.success) return detail;
+  const id = String(email_id || "").trim();
+  if (!id) return { success: false, error: "Missing email_id" };
   const acc = accounts.getAccountByIdOrEmail(account_id);
   if (!acc.success) return acc;
+  const openFolder = _normalizeFolder(folder);
+
+  // One fetch + parse serves both the subject/attachment count and the
+  // attachment bytes. This used to run show (fetch + parse) and then fetch
+  // and parse the same source a second time for the attachments.
+  const loaded = await withImapClient(acc.account, async (client) => {
+    await client.mailboxOpen(openFolder);
+    return _loadParsedMessage(client, id, id);
+  }, { idempotent: true });
+  if (!loaded.success) return loaded;
+  const { msg, parsed } = loaded;
 
   const recipients = (Array.isArray(to) ? to : [to]).map((x) => String(x)).filter((x) => x.trim());
   if (!recipients.length) return { success: false, error: "Missing --to" };
-  const subject = `Fwd: ${detail.subject || ""}`;
+  const subject = `Fwd: ${parsed.subject || (msg.envelope ? msg.envelope.subject : "") || ""}`;
+  const parsedAttachments = parsed.attachments || [];
 
   if (dry_run) {
-    const originalAttachmentCount = no_attachments ? 0 : (detail.real_attachment_count || detail.attachment_count || 0);
+    const realCount = parsedAttachments.filter((a) => attachmentFlags(a).is_real_attachment).length;
+    const originalAttachmentCount = no_attachments ? 0 : (realCount || parsedAttachments.length);
     return {
       success: true,
       dry_run: true,
@@ -1355,41 +1331,19 @@ async function forwardEmail({ email_id, to, body = "", folder = "INBOX", no_atta
     };
   }
 
-  let attachments = [];
-  if (!no_attachments && detail.attachment_count) {
-    if (_isTestMode()) {
-      const { getMailbox } = require("../testing/mock_store");
-      const mb = getMailbox(acc.account.id, _normalizeFolder(folder));
-      const raw = mb && mb.messages ? mb.messages.find((m) => String(m.uid) === String(email_id)) : null;
-      attachments = (raw && raw.attachments ? raw.attachments : []).map((a) => ({
+  const attachments = [];
+  if (!no_attachments) {
+    let totalBytes = 0;
+    for (const a of parsedAttachments) {
+      if (!a.content || !a.content.length) continue;
+      if (a.content.length > MAX_ATTACHMENT_BYTES) continue;
+      totalBytes += a.content.length;
+      if (totalBytes > MAX_ATTACHMENTS_TOTAL) break;
+      attachments.push({
         filename: path.basename(String(a.filename || "attachment")),
         content: a.content,
-        contentType: a.contentType,
-      }));
-    } else {
-      // Re-fetch the source so we can attach the original parts. Without this
-      // --no-attachments would be a no-op vs. always-drop, which is misleading.
-      const fetched = await withImapClient(acc.account, async (client) => {
-        await client.mailboxOpen(_normalizeFolder(folder));
-        const uid = Number(email_id);
-        if (!Number.isFinite(uid)) return null;
-        return client.fetchOne(uid, { source: true }, { uid: true });
-      }, { idempotent: true });
-      if (fetched && fetched.source) {
-        const parsed = await _safeParse(fetched.source);
-        let totalBytes = 0;
-        for (const a of parsed.attachments || []) {
-          if (!a.content || !a.content.length) continue;
-          if (a.content.length > MAX_ATTACHMENT_BYTES) continue;
-          totalBytes += a.content.length;
-          if (totalBytes > MAX_ATTACHMENTS_TOTAL) break;
-          attachments.push({
-            filename: path.basename(String(a.filename || "attachment")),
-            content: a.content,
-            contentType: a.contentType || "application/octet-stream",
-          });
-        }
-      }
+        contentType: a.contentType || "application/octet-stream",
+      });
     }
   }
 
@@ -1439,15 +1393,18 @@ async function listFolders({ account_id } = {}) {
 }
 
 async function downloadAttachments({ email_id, folder = "INBOX", account_id, output_dir = "" } = {}) {
-  const detail = await showEmail({ email_id, folder, account_id });
-  if (!detail.success) return detail;
+  const id = String(email_id || "").trim();
+  if (!id) return { success: false, error: "Missing email_id" };
+  const acc = accounts.getAccountByIdOrEmail(account_id);
+  if (!acc.success) return acc;
 
-  const targetDir = output_dir ? String(output_dir) : paths.getPathConfig().attachmentsDir;
-  fs.mkdirSync(targetDir, { recursive: true });
+  const openFolder = _normalizeFolder(folder);
+  const uid = Number(id);
+  if (!Number.isFinite(uid)) return { success: false, error: "Invalid email_id" };
 
   // Pick a non-conflicting filename inside targetDir, basename-only to defeat
   // path traversal from attacker-supplied filenames.
-  const _pickDest = (rawName) => {
+  const _pickDest = (targetDir, rawName) => {
     const filename = path.basename(String(rawName || "attachment"));
     if (!filename) return { filename: "", dest: "" };
     let dest = path.join(targetDir, filename);
@@ -1461,97 +1418,59 @@ async function downloadAttachments({ email_id, folder = "INBOX", account_id, out
     return { filename, dest };
   };
 
-  if (_isTestMode()) {
-    const acc = accounts.getAccountByIdOrEmail(account_id);
-    if (!acc.success) return acc;
-    const { getMailbox } = require("../testing/mock_store");
-    const mb = getMailbox(acc.account.id, _normalizeFolder(folder));
-    const raw = mb && mb.messages ? mb.messages.find((m) => String(m.uid) === String(email_id)) : null;
-    const attachments = [];
-    let totalBytes = 0;
-    for (const a of raw && raw.attachments ? raw.attachments : []) {
-      const content = a.content;
-      if (!content || !content.length) continue;
-      if (content.length > MAX_ATTACHMENT_BYTES) {
-        return { success: false, error: `Attachment "${a.filename}" exceeds ${MAX_ATTACHMENT_BYTES} bytes` };
-      }
-      totalBytes += content.length;
-      if (totalBytes > MAX_ATTACHMENTS_TOTAL) {
-        return { success: false, error: `Attachments exceed total cap of ${MAX_ATTACHMENTS_TOTAL} bytes` };
-      }
-      const { filename, dest } = _pickDest(a.filename);
-      if (!filename) continue;
-      fs.writeFileSync(dest, content);
-      attachments.push({
-        filename,
-        size: content.length,
-        size_formatted: formatSize(content.length),
-        content_type: a.contentType,
-        saved_path: dest,
-        ...attachmentFlags(a),
-      });
+  // One fetch + parse (it used to run show first, then fetch and parse the
+  // same source again).
+  const loaded = await withImapClient(acc.account, async (client) => {
+    await client.mailboxOpen(openFolder);
+    return _loadParsedMessage(client, uid, email_id);
+  }, { idempotent: true });
+  if (!loaded.success) return loaded;
+  const parsed = loaded.parsed;
+
+  // Check the caps before writing anything, so a rejected download leaves no
+  // partial set of files behind.
+  const toWrite = [];
+  let totalBytes = 0;
+  for (const a of parsed.attachments || []) {
+    const content = a.content;
+    if (!content || !content.length) continue;
+    if (content.length > MAX_ATTACHMENT_BYTES) {
+      return { success: false, error: `Attachment "${a.filename || "(unnamed)"}" exceeds ${MAX_ATTACHMENT_BYTES} bytes` };
     }
-    return {
-      success: true,
-      attachments,
-      attachment_count: attachments.length,
-      real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
-      email_id: String(email_id),
-      folder: _normalizeFolder(folder),
-      account: acc.account.email,
-    };
+    totalBytes += content.length;
+    if (totalBytes > MAX_ATTACHMENTS_TOTAL) {
+      return { success: false, error: `Attachments exceed total cap of ${MAX_ATTACHMENTS_TOTAL} bytes` };
+    }
+    toWrite.push(a);
   }
 
-  const acc = accounts.getAccountByIdOrEmail(account_id);
-  if (!acc.success) return acc;
+  const targetDir = output_dir ? String(output_dir) : paths.getPathConfig().attachmentsDir;
+  fs.mkdirSync(targetDir, { recursive: true });
 
-  const openFolder = _normalizeFolder(folder);
-  const uid = Number(email_id);
-  if (!Number.isFinite(uid)) return { success: false, error: "Invalid email_id" };
+  const attachments = [];
+  for (const a of toWrite) {
+    const { filename, dest } = _pickDest(targetDir, a.filename);
+    if (!filename) continue;
+    fs.writeFileSync(dest, a.content);
+    attachments.push({
+      filename,
+      size: a.content.length,
+      size_formatted: formatSize(a.content.length),
+      content_type: a.contentType || "application/octet-stream",
+      saved_path: dest,
+      ...attachmentFlags(a),
+    });
+  }
 
-  return withImapClient(acc.account, async (client) => {
-    await client.mailboxOpen(openFolder);
-    const msg = await client.fetchOne(uid, { source: true, envelope: true }, { uid: true });
-    if (!msg || !msg.source) return { success: false, error: `Email not found: ${email_id}` };
-
-    const parsed = await _safeParse(msg.source);
-
-    const attachments = [];
-    let totalBytes = 0;
-    for (const a of parsed.attachments || []) {
-      const content = a.content;
-      if (!content || !content.length) continue;
-      if (content.length > MAX_ATTACHMENT_BYTES) {
-        return { success: false, error: `Attachment "${a.filename || "(unnamed)"}" exceeds ${MAX_ATTACHMENT_BYTES} bytes` };
-      }
-      totalBytes += content.length;
-      if (totalBytes > MAX_ATTACHMENTS_TOTAL) {
-        return { success: false, error: `Attachments exceed total cap of ${MAX_ATTACHMENTS_TOTAL} bytes` };
-      }
-      const { filename, dest } = _pickDest(a.filename);
-      if (!filename) continue;
-      fs.writeFileSync(dest, content);
-
-      attachments.push({
-        filename,
-        size: content.length,
-        size_formatted: formatSize(content.length),
-        content_type: a.contentType || "application/octet-stream",
-        saved_path: dest,
-        ...attachmentFlags(a),
-      });
-    }
-
-    return {
-      success: true,
-      attachments,
-      attachment_count: attachments.length,
-      real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
-      email_id: String(email_id),
-      folder: openFolder,
-      account: acc.account.email,
-    };
-  });
+  return {
+    success: true,
+    attachments,
+    attachment_count: attachments.length,
+    real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
+    email_id: String(email_id),
+    folder: openFolder,
+    account: acc.account.email,
+  };
 }
 
 // Map user-facing flag_type to IMAP keyword. Unknown values fall through as
@@ -1598,17 +1517,15 @@ async function flagEmail({ email_id, set_flag, flag_type = "flagged", folder = "
     // Keep the cache in step with the server for the flags it mirrors, so a
     // cached list right after `flag --type read` doesn't contradict it.
     if (flag === "\\Seen" || flag === "\\Flagged") {
-      const dbPath = paths.getPathConfig().emailSyncDb;
-      await syncDb.updateEmailFlags({
-        dbPath,
-        accountId: acc.account.id,
-        folder: openFolder,
-        uids: [String(uid)],
-        ...(flag === "\\Seen" ? { unread: !set } : { flagged: set }),
+      await _cacheWrite((s) => {
+        s.updateFlags({
+          accountId: acc.account.id,
+          folder: openFolder,
+          uids: [String(uid)],
+          ...(flag === "\\Seen" ? { unread: !set } : { flagged: set }),
+        });
+        if (flag === "\\Seen") s.invalidateUnread({ accountId: acc.account.id, folder: openFolder });
       });
-      if (flag === "\\Seen") {
-        await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: openFolder });
-      }
     }
     return {
       success: true,
@@ -1647,27 +1564,30 @@ async function moveEmails({ email_ids, target_folder, source_folder = "INBOX", a
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(src);
+    // One UID SEARCH + one UID MOVE for the set, instead of a MOVE per uid.
+    // The search also catches uids that aren't in the source folder: a MOVE
+    // of a missing uid is a silent no-op on the server, which used to be
+    // reported as moved.
+    const existing = await _existingUids(client, ids);
+    const present = ids.filter((u) => existing.has(u));
+    const outcome = await _runBatched(present, (range) => client.messageMove(range, tgt, { uid: true }));
     const failed_ids = [];
     const moved_ids = [];
-    let moved = 0;
     for (const uid of ids) {
-      try {
-        await client.messageMove(uid, tgt, { uid: true });
-        moved += 1;
-        moved_ids.push(String(uid));
-      } catch {
-        failed_ids.push(String(uid));
-      }
+      if (outcome.has(uid) && outcome.get(uid) === null) moved_ids.push(String(uid));
+      else failed_ids.push(String(uid));
     }
+    const moved = moved_ids.length;
     if (moved_ids.length) {
       // The moved messages no longer exist under these UIDs in the source
       // folder (the target assigns new ones). Drop them from the cache so a
       // cached list doesn't keep showing them where they were, and invalidate
       // both folders' unread snapshots — unread mail changed sides.
-      const dbPath = paths.getPathConfig().emailSyncDb;
-      await syncDb.removeEmailsFromCache({ dbPath, accountId: acc.account.id, folder: src, uids: moved_ids });
-      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: src });
-      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: tgt });
+      await _cacheWrite((s) => {
+        s.removeEmails({ accountId: acc.account.id, folder: src, uids: moved_ids });
+        s.invalidateUnread({ accountId: acc.account.id, folder: src });
+        s.invalidateUnread({ accountId: acc.account.id, folder: tgt });
+      });
     }
     return {
       success: failed_ids.length === 0,

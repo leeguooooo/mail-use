@@ -69,7 +69,59 @@ function _compareDatesDesc(a, b) {
   return String(b || "").localeCompare(String(a || ""));
 }
 
+// Compact IMAP sequence-set for a list of UIDs: [1,2,3,7,9,10] -> "1:3,7,9:10".
+// One command per batch instead of one per UID, and the range form keeps the
+// command line short even for thousands of contiguous UIDs.
+function _uidSetString(uids) {
+  const sorted = [...new Set((uids || []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0))].sort((a, b) => a - b);
+  const parts = [];
+  let i = 0;
+  while (i < sorted.length) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j += 1;
+    parts.push(i === j ? String(sorted[i]) : `${sorted[i]}:${sorted[j]}`);
+    i = j + 1;
+  }
+  return parts.join(",");
+}
+
+function _chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Promise.all with at most `limit` tasks in flight. Results keep input order.
+// Per-account work runs on separate IMAP connections, so accounts can proceed
+// in parallel; the bound keeps a 20-account setup from opening 20 sockets at
+// once (and from tripping provider rate limits).
+async function _mapLimit(items, limit, fn) {
+  const list = Array.from(items || []);
+  const out = new Array(list.length);
+  let next = 0;
+  const n = Math.max(1, Math.min(Number(limit) || 1, list.length));
+  const workers = [];
+  for (let w = 0; w < n; w += 1) {
+    workers.push((async () => {
+      while (next < list.length) {
+        const i = next;
+        next += 1;
+        out[i] = await fn(list[i], i);
+      }
+    })());
+  }
+  await Promise.all(workers);
+  return out;
+}
+
+// Accounts processed concurrently by list/search/sync.
+const ACCOUNT_CONCURRENCY = 4;
+
 module.exports = {
+  ACCOUNT_CONCURRENCY,
+  _uidSetString,
+  _chunk,
+  _mapLimit,
   _normalizeFolder,
   _gid,
   _listMailboxes,
