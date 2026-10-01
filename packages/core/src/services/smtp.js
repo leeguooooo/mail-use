@@ -1,10 +1,4 @@
-function _isTestMode() {
-  return String(process.env.MAILBOX_INTERNAL_TEST_MODE || "").trim() === "1";
-}
-
-function _allowInsecureTls() {
-  return String(process.env.MAILBOX_ALLOW_INSECURE_TLS || "").trim() === "1";
-}
+const { _isTestMode, _allowInsecureTls } = require("./env");
 
 function _buildTransportOptions(account) {
   const port = Number(account.smtp.port);
@@ -30,7 +24,20 @@ function _buildTransportOptions(account) {
   return opts;
 }
 
+// Test mode swaps in a transport that accepts everything (see
+// testing/mock_smtp_transport.js) instead of reaching a real server.
+function _createTransport(account) {
+  if (_isTestMode()) {
+    const { createMockSmtpTransport } = require("../testing/mock_smtp_transport");
+    return createMockSmtpTransport();
+  }
+  const nodemailer = require("nodemailer");
+  return nodemailer.createTransport(_buildTransportOptions(account));
+}
+
 async function testConnection(account) {
+  // Stays ahead of the host check: test accounts (provider "mock") carry no
+  // SMTP settings, and checking them must still report success.
   if (_isTestMode()) {
     return { success: true };
   }
@@ -39,8 +46,7 @@ async function testConnection(account) {
     return { success: false, error: "Missing SMTP host" };
   }
 
-  const nodemailer = require("nodemailer");
-  const transporter = nodemailer.createTransport(_buildTransportOptions(account));
+  const transporter = _createTransport(account);
 
   try {
     await transporter.verify();
@@ -51,15 +57,7 @@ async function testConnection(account) {
 }
 
 async function sendMail({ account, to, cc, bcc, subject, text, html, attachments, headers }) {
-  if (_isTestMode()) {
-    return {
-      success: true,
-      messageId: "<mock-sent@example.com>",
-    };
-  }
-
-  const nodemailer = require("nodemailer");
-  const transporter = nodemailer.createTransport(_buildTransportOptions(account));
+  const transporter = _createTransport(account);
 
   const info = await transporter.sendMail({
     from: account.email,
