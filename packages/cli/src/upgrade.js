@@ -24,6 +24,7 @@ function assetTarget(platform = process.platform, arch = process.arch) {
   if (platform === "darwin" && (arch === "arm64" || arch === "aarch64")) return "darwin-arm64";
   if (platform === "darwin" && arch === "x64") return "darwin-x64";
   if (platform === "linux" && arch === "x64") return "linux-x64-gnu";
+  if (platform === "linux" && arch === "arm64") return "linux-arm64-gnu";
   return null;
 }
 
@@ -110,11 +111,11 @@ async function checkForUpdate(currentVersion) {
   };
 }
 
-// Where the running executable lives. In a pkg binary process.execPath IS the
-// binary; in a dev checkout it's node, and self-replacing would clobber node.
+// Where the running executable lives. In the release binary process.execPath IS
+// the binary; in a dev checkout it's node, and self-replacing would clobber node.
 function resolveInstalledBinary() {
-  const packaged = typeof process.pkg !== "undefined";
-  if (!packaged) return { path: "", packaged: false };
+  const { isPackagedBinary } = require("./packaged");
+  if (!isPackagedBinary()) return { path: "", packaged: false };
   return { path: process.execPath, packaged: true };
 }
 
@@ -131,10 +132,12 @@ function normalizeTag(tag) {
   return t.startsWith("v") ? t : `v${t}`;
 }
 
-// Environment for running the downloaded binary. A pkg binary exports
-// PKG_EXECPATH; a child that inherits it boots as a plain node runtime instead
-// of the CLI, so `staged --version` would fail for reasons unrelated to the
-// download. The version overrides would make any binary report what we expect.
+// Environment for running the downloaded binary. Historical: pkg-built
+// binaries (before the Node SEA switch) export PKG_EXECPATH, and a child that
+// inherits it boots as a plain node runtime instead of the CLI, so
+// `staged --version` would fail for reasons unrelated to the download. Still
+// stripped, since the running binary may be one of those. The version
+// overrides would make any binary report what we expect.
 function childEnv(env = process.env) {
   const out = {};
   for (const [k, v] of Object.entries(env)) {
@@ -297,8 +300,9 @@ async function performUpgrade({ currentVersion, targetTag = "", insecure = false
     // restartDaemon goes through launchd/systemd when they own the daemon and
     // judges success by the pid changing; a hand-started daemon is stopped and
     // reported as such rather than having a LaunchAgent installed behind the
-    // user's back. It runs in-process: it must not spawn the binary we just
-    // replaced (a pkg child inherits PKG_EXECPATH and is not the CLI).
+    // user's back. It runs in-process rather than spawning the binary we just
+    // replaced (historically a pkg child inherited PKG_EXECPATH and was not
+    // the CLI); it only shells out to launchctl/systemctl.
     let daemon;
     try {
       const r = await restart({});

@@ -1609,10 +1609,10 @@ async function main(argv) {
     .command("config")
     .description("Print a sample MCP client config snippet for Claude Desktop / Code")
     .action(() => {
-      // #22：装机版是 pkg 单文件二进制，process.argv[1] 是 snapshot 内的虚拟路径
-      // （/snapshot/Mailbox/packages/cli/bin/mail-use.js），在用户机器上并不存在——照着这份
-      // config 配的客户端一定起不来。二进制里 execPath 就是 `mail-use` 自己，直接带子命令即可。
-      const packaged = process.pkg !== undefined;
+      // #22：装机版是单文件二进制（现为 Node SEA，早期是 pkg），process.argv[1] 不是磁盘上
+      // 真实存在的脚本（pkg 时代是 /snapshot/... 虚拟路径）——照着它配的客户端一定起不来。
+      // 二进制里 execPath 就是 `mail-use` 自己，直接带子命令即可。
+      const packaged = require("./packaged").isPackagedBinary();
       const cfg = {
         mcpServers: {
           "mail-use": {

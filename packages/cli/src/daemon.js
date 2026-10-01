@@ -351,15 +351,15 @@ function _resolveCliExecutable() {
   //   { node: process.execPath, script: argv[1] } so the unit reads
   //   `node /abs/path/mailbox.js daemon start …`.
   //
-  // - In a pkg-bundled binary (the npm distribution), `process.execPath`
-  //   IS the standalone binary and `process.argv[1]` is `/snapshot/...`
-  //   — a virtual path that only exists inside the binary's embedded
-  //   filesystem. In that case the unit must invoke the binary directly
-  //   with no script argument. We signal that by returning node = "".
+  // - In the release binary (Node SEA; pkg before that), `process.execPath`
+  //   IS the standalone binary and argv[1] is not a real script on disk
+  //   (pkg used a virtual `/snapshot/...` path). The unit must invoke the
+  //   binary directly with no script argument. We signal that by returning
+  //   node = "".
   const argv1 = process.argv[1] || "";
   const exe = process.execPath || "node";
-  const isPkgBundle = argv1.startsWith("/snapshot/") || (typeof process.pkg !== "undefined");
-  if (isPkgBundle) return { node: "", script: exe };
+  const { isPackagedBinary } = require("./packaged");
+  if (isPackagedBinary() || argv1.startsWith("/snapshot/")) return { node: "", script: exe };
   if (argv1 && fs.existsSync(argv1)) return { node: exe, script: argv1 };
   return { node: exe, script: "mail-use" };
 }
@@ -388,7 +388,7 @@ function _xml(s) {
 }
 
 function _renderLaunchdPlist({ node, script, syncIntervalSec, logPath }) {
-  // node === "" means the script IS a self-contained binary (pkg).
+  // node === "" means the script IS the self-contained release binary.
   const programArgs = (node ? [node, script] : [script])
     .concat(["daemon", "start", "--sync-interval", String(syncIntervalSec)]);
   const argsXml = programArgs.map((a) => `    <string>${_xml(a)}</string>`).join("\n");

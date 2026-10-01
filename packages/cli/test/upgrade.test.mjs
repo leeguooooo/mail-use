@@ -43,15 +43,16 @@ describe("compareVersions", () => {
 });
 
 describe("assetTarget", () => {
-  it("maps the three released platforms", () => {
+  it("maps the released platforms", () => {
     expect(upgrade.assetTarget("darwin", "arm64")).toBe("darwin-arm64");
     expect(upgrade.assetTarget("darwin", "x64")).toBe("darwin-x64");
     expect(upgrade.assetTarget("linux", "x64")).toBe("linux-x64-gnu");
+    expect(upgrade.assetTarget("linux", "arm64")).toBe("linux-arm64-gnu");
   });
 
   it("returns null on platforms with no release asset", () => {
     expect(upgrade.assetTarget("win32", "x64")).toBeNull();
-    expect(upgrade.assetTarget("linux", "arm64")).toBeNull();
+    expect(upgrade.assetTarget("linux", "ia32")).toBeNull();
   });
 
   // install.sh and the upgrade path must agree on asset names, or `upgrade`
@@ -64,6 +65,23 @@ describe("assetTarget", () => {
     // ${target} below is shell interpolation inside install.sh, not JS.
     // eslint-disable-next-line no-template-curly-in-string
     expect(sh).toContain('asset="mail-use-${target}.tar.gz"');
+  });
+});
+
+describe("isPackagedBinary", () => {
+  const { isPackagedBinary } = require("../src/packaged.js");
+
+  it("is false under plain node (not a SEA, no process.pkg)", () => {
+    expect(isPackagedBinary()).toBe(false);
+  });
+
+  it("still recognises a pkg-built binary from before the SEA switch", () => {
+    process.pkg = {};
+    try {
+      expect(isPackagedBinary()).toBe(true);
+    } finally {
+      delete process.pkg;
+    }
   });
 });
 
