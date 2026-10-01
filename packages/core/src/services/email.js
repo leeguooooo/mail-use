@@ -9,7 +9,8 @@ const {
   _normalizeFolder, _gid, _listMailboxes, _selectableFoldersFor,
   _uidsSortedDesc, _compareDatesDesc,
 } = require("./email/internals");
-const { _trashFolderCandidates, _findTrashFolder, _uidExistsInFolder } = require("./email/trash");
+const { _trashFolderCandidates, _findTrashFolder, _existingUids } = require("./email/trash");
+const { _runBatched, _parseUidList } = require("./email/batch");
 const {
   _outgoingAttachments, _outgoingAttachmentPreview,
   _splitAddressList, _addressEmail, _dedupeAddresses, _buildReferences,
@@ -1074,17 +1075,18 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    const uids = ids.map((x) => Number(x));
-    const results = [];
-    for (const uid of uids) {
-      try {
-        if (markAs === "read") await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-        else await client.messageFlagsRemove(uid, ["\\Seen"], { uid: true });
-        results.push({ success: true, email_id: String(uid), folder: openFolder, account_id: acc.account.id });
-      } catch (e) {
-        results.push({ success: false, email_id: String(uid), folder: openFolder, account_id: acc.account.id, error: e && e.message ? e.message : "failed" });
-      }
-    }
+    // One UID STORE for the whole set (per chunk), not one per uid.
+    const { valid } = _parseUidList(ids);
+    const outcome = await _runBatched(valid, (range) => (markAs === "read"
+      ? client.messageFlagsAdd(range, ["\\Seen"], { uid: true })
+      : client.messageFlagsRemove(range, ["\\Seen"], { uid: true })));
+    const results = ids.map((raw) => {
+      const n = Number(raw);
+      const base = { email_id: outcome.has(n) ? String(n) : String(raw), folder: openFolder, account_id: acc.account.id };
+      if (!outcome.has(n)) return { success: false, ...base, error: "Invalid email_id" };
+      const err = outcome.get(n);
+      return err ? { success: false, ...base, error: err } : { success: true, ...base };
+    });
     const marked = results.filter((r) => r.success).length;
     if (marked > 0) {
       const successfulUids = results.filter((r) => r.success).map((r) => r.email_id);
@@ -1134,8 +1136,6 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    const uids = ids.map((x) => Number(x));
-    const results = [];
 
     let trashName = "";
     async function ensureTrashName() {
@@ -1151,45 +1151,53 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
       }
     }
 
-    for (const uid of uids) {
+    // Round trips for N uids: one UID SEARCH for existence and one MOVE /
+    // EXPUNGE for the whole set (per 500-uid chunk), plus a SELECT + SEARCH of
+    // the trash only when some uids were already gone. It used to be four
+    // per uid (SELECT, FETCH, SELECT, MOVE).
+    const { valid } = _parseUidList(ids);
+    const existing = await _existingUids(client, valid);
+    const present = valid.filter((u) => existing.has(u));
+    const outcome = await _runBatched(present, (range) => (permanent
+      ? client.messageDelete(range, { uid: true })
+      : client.messageMove(range, trashName, { uid: true })));
+
+    // Already-gone uids: a retried delete whose first attempt went through
+    // shows up in the trash, which counts as success.
+    const missing = [...new Set(valid.filter((u) => !existing.has(u)))];
+    let inTrash = new Set();
+    let existingTrashName = "";
+    if (missing.length) {
       try {
-        const sourceExists = await _uidExistsInFolder(client, openFolder, uid);
-        if (!sourceExists) {
-          let foundInTrash = false;
-          let existingTrashName = "";
-          try {
-            existingTrashName = await ensureTrashName();
-            foundInTrash = existingTrashName !== openFolder && await _uidExistsInFolder(client, existingTrashName, uid);
-          } catch {
-            foundInTrash = false;
-          }
-          if (foundInTrash) {
-            results.push({
-              success: true,
-              email_id: String(uid),
-              folder: existingTrashName,
-              account_id: acc.account.id,
-              already_deleted: true,
-            });
-          } else {
-            results.push({
-              success: false,
-              email_id: String(uid),
-              folder: openFolder,
-              account_id: acc.account.id,
-              error: "Email not found in source folder or trash",
-            });
-          }
-          continue;
+        existingTrashName = await ensureTrashName();
+        if (existingTrashName !== openFolder) {
+          await client.mailboxOpen(existingTrashName);
+          inTrash = await _existingUids(client, missing);
         }
-        await client.mailboxOpen(openFolder);
-        if (permanent) await client.messageDelete(uid, { uid: true });
-        else await client.messageMove(uid, trashName, { uid: true });
-        results.push({ success: true, email_id: String(uid), folder: openFolder, account_id: acc.account.id });
-      } catch (e) {
-        results.push({ success: false, email_id: String(uid), folder: openFolder, account_id: acc.account.id, error: e && e.message ? e.message : "failed" });
+      } catch {
+        inTrash = new Set();
       }
     }
+
+    const results = ids.map((raw) => {
+      const n = Number(raw);
+      if (outcome.has(n)) {
+        const err = outcome.get(n);
+        return err
+          ? { success: false, email_id: String(n), folder: openFolder, account_id: acc.account.id, error: err }
+          : { success: true, email_id: String(n), folder: openFolder, account_id: acc.account.id };
+      }
+      if (inTrash.has(n)) {
+        return { success: true, email_id: String(n), folder: existingTrashName, account_id: acc.account.id, already_deleted: true };
+      }
+      return {
+        success: false,
+        email_id: Number.isInteger(n) && n > 0 ? String(n) : String(raw),
+        folder: openFolder,
+        account_id: acc.account.id,
+        error: Number.isInteger(n) && n > 0 ? "Email not found in source folder or trash" : "Invalid email_id",
+      };
+    });
     const deleted = results.filter((r) => r.success).length;
     if (deleted > 0) {
       // UIDs are per-folder: scope the removal to the folder we deleted from,
@@ -1647,18 +1655,20 @@ async function moveEmails({ email_ids, target_folder, source_folder = "INBOX", a
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(src);
+    // One UID SEARCH + one UID MOVE for the set, instead of a MOVE per uid.
+    // The search also catches uids that aren't in the source folder: a MOVE
+    // of a missing uid is a silent no-op on the server, which used to be
+    // reported as moved.
+    const existing = await _existingUids(client, ids);
+    const present = ids.filter((u) => existing.has(u));
+    const outcome = await _runBatched(present, (range) => client.messageMove(range, tgt, { uid: true }));
     const failed_ids = [];
     const moved_ids = [];
-    let moved = 0;
     for (const uid of ids) {
-      try {
-        await client.messageMove(uid, tgt, { uid: true });
-        moved += 1;
-        moved_ids.push(String(uid));
-      } catch {
-        failed_ids.push(String(uid));
-      }
+      if (outcome.has(uid) && outcome.get(uid) === null) moved_ids.push(String(uid));
+      else failed_ids.push(String(uid));
     }
+    const moved = moved_ids.length;
     if (moved_ids.length) {
       // The moved messages no longer exist under these UIDs in the source
       // folder (the target assigns new ones). Drop them from the cache so a
