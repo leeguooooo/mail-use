@@ -56,10 +56,12 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh
 mail-use --help
 ```
 
-Downloads the prebuilt binary for your platform (macOS arm64/x64, Linux x64) from the
+Downloads the prebuilt binary for your platform (macOS arm64/x64, Linux x64/arm64) from the
 [latest GitHub Release](https://github.com/leeguooooo/mail-use/releases/latest), verifies its
 checksum, and installs to `~/.local/bin`. Pin a version with `MAIL_USE_VERSION=v2.11.2`, or
-change the dir with `MAIL_USE_INSTALL_DIR=...`.
+change the dir with `MAIL_USE_INSTALL_DIR=...`. A missing `.sha256` aborts the install
+(`MAIL_USE_INSECURE=1` overrides; a mismatch is always fatal). Each tarball also carries
+signed build provenance: `gh attestation verify mail-use-<target>.tar.gz --repo leeguooooo/mail-use`.
 
 The installer also drops a `mailbox` symlink next to it, so scripts written against the old
 name keep working.

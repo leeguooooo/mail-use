@@ -8,7 +8,14 @@
 #   MAIL_USE_VERSION=v2.11.2   install a specific tag (default: latest release)
 #   MAIL_USE_INSTALL_DIR=...   install dir (default: ~/.local/bin)
 #   MAIL_USE_NO_DAEMON=1       skip setting up the background daemon
+#   MAIL_USE_INSECURE=1        install even when the .sha256 sidecar or a sha256
+#                              tool is unavailable (NOT recommended; a checksum
+#                              mismatch is still fatal)
 #   (the older MAILBOX_* names still work)
+#
+# Every download is checked against the release's .sha256 sidecar. For a
+# stronger check, each tarball also carries signed build provenance:
+#   gh attestation verify mail-use-<target>.tar.gz --repo leeguooooo/mail-use
 set -eu
 
 REPO="leeguooooo/mail-use"
@@ -29,8 +36,9 @@ case "$os" in
     esac ;;
   Linux)
     case "$arch" in
-      x86_64) target="linux-x64-gnu" ;;
-      *) err "unsupported Linux arch: $arch (only x86_64 prebuilt)" ;;
+      x86_64|amd64)  target="linux-x64-gnu" ;;
+      aarch64|arm64) target="linux-arm64-gnu" ;;
+      *) err "unsupported Linux arch: $arch (prebuilt: x86_64, aarch64)" ;;
     esac ;;
   *) err "unsupported OS: $os (macOS/Linux only; on Windows use WSL or npm)" ;;
 esac
@@ -59,20 +67,41 @@ if ! curl -fSL --retry 3 -o "$tmp/$asset" "$url"; then
   url="${base}/${legacy_asset}"
 fi
 
-# Optional checksum verification when the .sha256 sidecar is present.
-if curl -fsSL --retry 2 -o "$tmp/$asset.sha256" "${url}.sha256" 2>/dev/null; then
-  expected="$(awk '{print $1}' "$tmp/$asset.sha256")"
+# The published .sha256 sidecar is required: a missing checksum is a failed
+# install, never permission to skip verification. MAIL_USE_INSECURE=1 is the
+# only way past a missing sidecar or sha256 tool, and it says so loudly. A
+# checksum that is present but wrong is fatal no matter what.
+skip_verify() {
+  [ "${MAIL_USE_INSECURE:-}" = "1" ] \
+    || err "$1; refusing to install unverified bytes (MAIL_USE_INSECURE=1 overrides)"
+  printf 'mail-use-install: WARNING — %s; installing UNVERIFIED (MAIL_USE_INSECURE=1)\n' "$1" >&2
+}
+
+expected=""
+if curl -fsSL --retry 2 -o "$tmp/$asset.sha256" "${url}.sha256"; then
+  expected="$(awk 'NR == 1 {print $1}' "$tmp/$asset.sha256")"
+  [ "${#expected}" -eq 64 ] || err "invalid checksum file"
+  case "$expected" in *[!0-9a-fA-F]*) err "invalid checksum file" ;; esac
+else
+  skip_verify "checksum download failed (${url}.sha256)"
+fi
+
+if [ -n "$expected" ]; then
+  actual=""
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
   elif command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
+  elif command -v openssl >/dev/null 2>&1; then
+    actual="$(openssl dgst -sha256 -r "$tmp/$asset" | awk '{print $1}')"
   else
-    actual=""
+    skip_verify "no sha256sum, shasum or openssl to verify the download"
   fi
-  if [ -n "$actual" ] && [ "$expected" != "$actual" ]; then
-    err "checksum mismatch (expected $expected, got $actual)"
+  if [ -n "$actual" ]; then
+    [ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" = "$actual" ] \
+      || err "checksum mismatch (expected $expected, got $actual)"
+    printf 'mail-use-install: checksum ok\n'
   fi
-  [ -n "$actual" ] && printf 'mail-use-install: checksum ok\n'
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
