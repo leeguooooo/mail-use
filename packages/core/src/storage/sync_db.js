@@ -820,6 +820,25 @@ function _cachedUids(db, accountId, folder) {
   return rows.map((r) => String(r.uid));
 }
 
+// uid -> { unread, flagged } as cached, so a sync can tell which server flags
+// actually changed instead of counting every refreshed row as an update.
+function _cachedFlags(db, accountId, folder) {
+  const rows = _execRows(
+    db,
+    `
+      SELECT e.uid, e.is_read, e.is_flagged
+      FROM emails e
+      LEFT JOIN folders f ON e.folder_id = f.id
+      WHERE e.account_id = ?
+        AND (f.name = ? COLLATE NOCASE OR (e.folder_id IS NULL AND ? = 'INBOX'))
+    `,
+    [String(accountId), String(folder || "INBOX"), String(folder || "INBOX")]
+  );
+  const out = new Map();
+  for (const r of rows) out.set(String(r.uid), { unread: !Number(r.is_read), flagged: Boolean(Number(r.is_flagged)) });
+  return out;
+}
+
 async function getEmailUIDsFromCache({ dbPath, accountId, folder }) {
   if (!dbPath || !fs.existsSync(dbPath)) return [];
   const h = await openSyncDb(dbPath);
@@ -833,7 +852,7 @@ async function getEmailUIDsFromCache({ dbPath, accountId, folder }) {
 // What incremental sync needs to know about a folder from the last pass, in
 // one DB open: the IMAP state it recorded and the UIDs it cached.
 async function getFolderSyncState({ dbPath, accountId, folder }) {
-  const empty = { uidValidity: "", uidNext: 0, highestModseq: "", cachedUids: [] };
+  const empty = { uidValidity: "", uidNext: 0, highestModseq: "", cachedUids: [], cachedFlags: new Map() };
   if (!dbPath || !fs.existsSync(dbPath)) return empty;
   const h = await openSyncDb(dbPath);
   try {
@@ -847,6 +866,7 @@ async function getFolderSyncState({ dbPath, accountId, folder }) {
       uidNext: Number(row.uid_next || 0),
       highestModseq: row.highest_modseq != null ? String(row.highest_modseq) : "",
       cachedUids: _cachedUids(h.db, accountId, folder),
+      cachedFlags: _cachedFlags(h.db, accountId, folder),
     };
   } catch {
     return empty;

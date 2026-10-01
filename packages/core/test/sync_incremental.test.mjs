@@ -132,13 +132,43 @@ describe("C13: incremental sync", () => {
     await sync.force({ account_id: "mock_acc" });
     expect(flagOnlyFetches()).toHaveLength(0); // HIGHESTMODSEQ unchanged
 
+    // A change made through mail-use is already in the cache: refreshed, not counted.
     await email.markEmails({ email_ids: ["103"], mark_as: "unread", account_id: "mock_acc" });
     clearMockCalls();
-    const r = await sync.force({ account_id: "mock_acc" });
+    let r = await sync.force({ account_id: "mock_acc" });
     expect(flagOnlyFetches()).toHaveLength(1);
     expect(flagOnlyFetches()[0].fetchOpts.changedSince).toBe(10n);
-    expect(r.emails_updated).toBe(1);
+    expect(r.emails_updated).toBe(0);
     expect((await cachedRows()).find((e) => e.uid === "103").unread).toBe(true);
+
+    // A change made elsewhere (another client) is counted.
+    const mb = getMailbox("mock_acc", "INBOX");
+    const m102 = mb.messages.find((m) => m.uid === 102);
+    m102.flags.add("\\Flagged");
+    mb.highestModseq = 12;
+    m102.modseq = 12;
+    r = await sync.force({ account_id: "mock_acc" });
+    expect(r.emails_updated).toBe(1);
+  });
+
+  it("an unchanged mailbox reports no updates even when flags are re-fetched", async () => {
+    await sync.force({ account_id: "mock_acc" });
+    const r = await sync.force({ account_id: "mock_acc" });
+    expect(r.mode).toBe("incremental");
+    expect(r.emails_updated).toBe(0);
+  });
+
+  it("a server that omits UIDNEXT (163) still goes incremental after the first pass", async () => {
+    getMailbox("mock_acc", "INBOX").omitUidNext = true;
+    await sync.force({ account_id: "mock_acc" });
+    const st = await syncDb.getFolderSyncState({ dbPath, accountId: "mock_acc", folder: "INBOX" });
+    expect(st.uidNext).toBe(104);
+
+    getMailbox("mock_acc", "INBOX").messages.push(msg(104));
+    clearMockCalls();
+    const r = await sync.force({ account_id: "mock_acc" });
+    expect(r).toMatchObject({ mode: "incremental", emails_added: 1 });
+    expect(envelopeFetches()[0].range).toBe("104");
   });
 });
 

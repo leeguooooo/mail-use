@@ -99,7 +99,7 @@ async function _scanFolder(account, folder, prev, { full }) {
   return withImapClient(account, async (client) => {
     const st = await client.mailboxOpen(folder);
     const uidValidity = _bigToString(st && st.uidValidity);
-    const uidNext = Number((st && st.uidNext) || 0);
+    let uidNext = Number((st && st.uidNext) || 0);
     const highestModseq = _bigToString(st && st.highestModseq);
 
     let unreadCount = 0;
@@ -112,6 +112,10 @@ async function _scanFolder(account, folder, prev, { full }) {
 
     const found = await client.search({ all: true }, { uid: true });
     const serverUids = _uidsSortedDesc(Array.isArray(found) ? found : []);
+    // Some servers (163) leave UIDNEXT out of SELECT, which would keep every
+    // pass on the full path. UIDs only ever grow, so one past the highest UID
+    // that exists is a safe lower bound for where new mail starts.
+    if (!uidNext && serverUids.length) uidNext = Number(serverUids[0]) + 1;
 
     const validityChanged = Boolean(prev.uidValidity && uidValidity && prev.uidValidity !== uidValidity);
     const incremental = !full && !validityChanged && Boolean(prev.uidValidity) && uidValidity === prev.uidValidity
@@ -185,6 +189,12 @@ async function _syncAccount(a, { dbPath, full }) {
   const scan = await _scanFolder(a, SYNC_FOLDER, prev, { full });
 
   const cachedBefore = new Set(prev.cachedUids.map(String));
+  const cachedFlags = prev.cachedFlags || new Map();
+  // Only rows whose flags really changed on the server count as updated.
+  const emailsUpdated = scan.flagUpdates.filter((u) => {
+    const c = cachedFlags.get(String(u.uid));
+    return !c || c.unread !== u.unread || c.flagged !== u.flagged;
+  }).length;
   let emailsDeleted = 0;
   let emailsAdded = 0;
   // Single write session per account: one DB open, one flush, one file
@@ -243,7 +253,7 @@ async function _syncAccount(a, { dbPath, full }) {
     folders_synced: 1,
     mode: scan.mode,
     emails_added: emailsAdded,
-    emails_updated: scan.flagUpdates.length,
+    emails_updated: emailsUpdated,
     emails_deleted: emailsDeleted,
     total_in_folder: scan.totalInFolder,
   };

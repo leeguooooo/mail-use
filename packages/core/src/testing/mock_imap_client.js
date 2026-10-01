@@ -145,7 +145,8 @@ class MockImapClient {
       unseen,
       // imapflow reports these as BigInt; mirror that so callers handle it.
       uidValidity: BigInt(mb.uidValidity != null ? mb.uidValidity : 1),
-      uidNext: Math.max(Number(mb.uidNext || 0), maxUid + 1),
+      // omitUidNext mimics servers (163) that leave UIDNEXT out of SELECT.
+      ...(mb.omitUidNext ? {} : { uidNext: Math.max(Number(mb.uidNext || 0), maxUid + 1) }),
       ...(mb.highestModseq != null ? { highestModseq: BigInt(mb.highestModseq) } : {}),
     };
     return this.mailbox;
