@@ -24,20 +24,6 @@ function run(cmd, args, opts = {}) {
   child_process.execFileSync(cmd, args, { stdio: "inherit", ...opts });
 }
 
-// 运行时代码（upgrade.js / daemon.js / main.js）靠 `process.pkg` 判断"我是不是发布出去的
-// 单文件二进制"：是的话 execPath 就是 mail-use 本身，自升级、daemon 单元文件、MCP 配置
-// 都按这个走。SEA 没有 process.pkg，不补的话二进制会把自己当成 `node script.js`，
-// upgrade 拒绝升级、daemon install 写出 `"" <binary>` 这种起不来的单元。
-// 这段 banner 在 SEA 里补一个同名标记，让现有判断照旧成立；源码改成直接问
-// `require("node:sea").isSea()` 之后可以删掉。
-const SEA_BANNER = [
-  "try {",
-  '  if (typeof process.pkg === "undefined" && require("node:sea").isSea()) {',
-  '    Object.defineProperty(process, "pkg", { value: Object.freeze({ sea: true }), enumerable: false });',
-  "  }",
-  "} catch {}",
-].join("\n");
-
 function bundle(entry, root, outFile, nodeMajor) {
   const esbuild = require.resolve("esbuild/bin/esbuild", { paths: [root] });
   console.log(`Bundling with esbuild -> ${outFile}`);
@@ -50,7 +36,6 @@ function bundle(entry, root, outFile, nodeMajor) {
     "--platform=node",
     `--target=node${nodeMajor}`,
     "--format=cjs",
-    `--banner:js=${SEA_BANNER}`,
     `--outfile=${outFile}`,
     "--log-level=warning",
   ]);
@@ -75,7 +60,17 @@ async function buildSea({ bundleFile, outBin, workDir }) {
       2,
     ),
   );
-  run(process.execPath, ["--experimental-sea-config", config]);
+  // 有的发行版（如 Homebrew 的 node）编译时关了 SEA，只打印一句 "Single executable
+  // application is disabled." 就退出——换成官方 nodejs.org 构建的 node 即可。
+  try {
+    run(process.execPath, ["--experimental-sea-config", config]);
+  } catch (e) {
+    throw new Error(
+      `${process.execPath} cannot build a SEA blob (${e.message}). ` +
+        "If it printed 'Single executable application is disabled', use an official nodejs.org build of Node.",
+      { cause: e },
+    );
+  }
 
   fs.rmSync(outBin, { force: true });
   fs.copyFileSync(process.execPath, outBin);
