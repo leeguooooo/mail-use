@@ -12,9 +12,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 = engines floor; 24 = the Node embedded in the release binary
-        # (SHIPPED_NODE in release-binaries.yml).
-        node-version: ["20", "22", "24"]
+        # 22 = engines floor (>=22.12; Node 20 went EOL 2026-04-30);
+        # 24 = the Node embedded in the release binary (SHIPPED_NODE in
+        # release-binaries.yml).
+        node-version: ["22", "24"]
 
     steps:
       - uses: actions/checkout@v4
