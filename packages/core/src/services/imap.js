@@ -1,10 +1,5 @@
-function _isTestMode() {
-  return String(process.env.MAILBOX_INTERNAL_TEST_MODE || "").trim() === "1";
-}
-
-function _allowInsecureTls() {
-  return String(process.env.MAILBOX_ALLOW_INSECURE_TLS || "").trim() === "1";
-}
+const { _isTestMode } = require("./env");
+const { createImapClient } = require("./imap_client");
 
 // Optional persistent connection pool. The mailbox daemon installs one
 // here at startup; everything else (one-shot CLI, tests) leaves it null
@@ -25,30 +20,12 @@ async function withImapClient(account, fn, opts = {}) {
     return _GLOBAL_POOL.withClient(account, fn, opts);
   }
 
-  const { ImapFlow } = require("imapflow");
-  const port = Number(account.imap.port);
-  const secure = Boolean(account.imap.secure);
-  const tls = {
-    rejectUnauthorized: !_allowInsecureTls(),
-    minVersion: "TLSv1.2",
-  };
-  // Implicit TLS (993): connect over TLS. Otherwise require STARTTLS to refuse plaintext.
-  const client = new ImapFlow({
-    host: account.imap.host,
-    port,
-    secure,
-    requireTLS: !secure,
-    auth: {
-      user: account.email,
-      pass: account.password,
-    },
-    tls,
-    logger: false,
-  });
   // Without a listener a socket 'error' is an uncaught exception that takes
   // the process down; the failing command rejects on its own anyway.
-  client.on("error", (err) => {
-    if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: imap connection error for ${account.email}: ${(err && err.message) || err}\n`);
+  const client = createImapClient(account, {
+    onError: (err) => {
+      if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: imap connection error for ${account.email}: ${(err && err.message) || err}\n`);
+    },
   });
 
   await client.connect();

@@ -133,6 +133,13 @@ async function _previewFromSource(source, previewChars) {
   }
 }
 
+// Add preview / preview_truncated to a list or search row from the partial
+// source fetched with PREVIEW_SOURCE_QUERY. No source, no change.
+async function _applyPreview(item, msg, previewChars) {
+  if (msg && msg.source) Object.assign(item, await _previewFromSource(msg.source, previewChars));
+  return item;
+}
+
 const PREVIEW_SOURCE_QUERY = { start: 0, maxLength: PREVIEW_SOURCE_BYTES };
 
 module.exports = {
@@ -145,4 +152,5 @@ module.exports = {
   _fetchFullMessages,
   _loadParsedMessage,
   _previewFromSource,
+  _applyPreview,
 };

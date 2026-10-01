@@ -150,7 +150,11 @@ function _ensureSchema(db) {
 }
 
 function _createBaseSchema(db) {
-  // Matches Python schema in src/database/email_sync_db.py
+  // Matches Python schema in src/database/email_sync_db.py, minus the legacy
+  // email_content / attachments / sync_history tables: nothing has read or
+  // written them since the Node rewrite, so new files no longer get them.
+  // Existing files keep theirs untouched (no DROP) — the tables are harmless
+  // and an older build opening the file still finds what it expects.
   db.run(`
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
@@ -206,51 +210,6 @@ function _createBaseSchema(db) {
     );
   `);
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS email_content (
-      email_id INTEGER PRIMARY KEY,
-      plain_text TEXT,
-      html_text TEXT,
-      headers TEXT,
-      raw_size INTEGER,
-      content_loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS attachments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email_id INTEGER NOT NULL,
-      filename TEXT,
-      content_type TEXT,
-      size_bytes INTEGER DEFAULT 0,
-      content_id TEXT,
-      is_inline BOOLEAN DEFAULT FALSE,
-      data BLOB,
-      file_path TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE
-    );
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sync_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id TEXT NOT NULL,
-      folder_name TEXT,
-      sync_type TEXT,
-      start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      end_time TIMESTAMP,
-      emails_added INTEGER DEFAULT 0,
-      emails_updated INTEGER DEFAULT 0,
-      emails_deleted INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'running',
-      error_message TEXT,
-      FOREIGN KEY (account_id) REFERENCES accounts (id)
-    );
-  `);
-
   const indexes = [
     "CREATE INDEX IF NOT EXISTS idx_emails_uid ON emails (uid)",
     "CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails (message_id)",
@@ -258,8 +217,6 @@ function _createBaseSchema(db) {
     "CREATE INDEX IF NOT EXISTS idx_emails_is_flagged ON emails (is_flagged)",
     "CREATE INDEX IF NOT EXISTS idx_emails_sender_email ON emails (sender_email)",
     "CREATE INDEX IF NOT EXISTS idx_folders_account ON folders (account_id)",
-    "CREATE INDEX IF NOT EXISTS idx_sync_history_account ON sync_history (account_id)",
-    "CREATE INDEX IF NOT EXISTS idx_attachments_email ON attachments (email_id)",
     // The cached list query: one account+folder, newest first.
     "CREATE INDEX IF NOT EXISTS idx_emails_account_folder_date ON emails (account_id, folder_id, date_sent)",
   ];
@@ -751,22 +708,13 @@ async function upsertEmails({ dbPath, accountId, folderId, emails }) {
   }
 }
 
-async function invalidateFolderUnreadCount({ dbPath, accountId, folder }) {
-  try {
-    await withWriteSession(dbPath, (s) => s.invalidateUnread({ accountId, folder }));
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: e && e.message ? e.message : "db error" };
-  }
-}
-
 function _uniqueIds(uids) {
   return [...new Set((uids || []).map((x) => String(x).trim()).filter(Boolean))];
 }
 
 // IMAP UIDs are only unique within a folder: uid 42 in INBOX and uid 42 in
 // Archive are different messages. Build the WHERE fragment that pins a uid
-// list to one folder (same matching rule as getEmailUIDsFromCache). With no
+// list to one folder (same matching rule as _cachedUids). With no
 // folder the scope is account-wide — kept only for external callers of the
 // old signature; every in-tree caller passes a folder.
 function _uidScope(accountId, folder, ids) {
@@ -837,16 +785,6 @@ function _cachedFlags(db, accountId, folder) {
   const out = new Map();
   for (const r of rows) out.set(String(r.uid), { unread: !Number(r.is_read), flagged: Boolean(Number(r.is_flagged)) });
   return out;
-}
-
-async function getEmailUIDsFromCache({ dbPath, accountId, folder }) {
-  if (!dbPath || !fs.existsSync(dbPath)) return [];
-  const h = await openSyncDb(dbPath);
-  try {
-    return _cachedUids(h.db, accountId, folder);
-  } finally {
-    try { h.close(); } catch { /* ignore */ }
-  }
 }
 
 // What incremental sync needs to know about a folder from the last pass, in
@@ -923,13 +861,14 @@ module.exports = {
   lookupFolderForUid,
   lookupFoldersForUids,
   getFolderSyncState,
+  // Single-call wrappers around a write session. Production code batches
+  // through withWriteSession; these stay exported because the core and CLI
+  // test suites seed caches with them.
   upsertAccount,
   upsertFolder,
   upsertEmails,
-  invalidateFolderUnreadCount,
   removeEmailsFromCache,
   updateEmailFlags,
-  getEmailUIDsFromCache,
   withWriteSession,
   // exported for tests
   _acquireLock,

@@ -6,7 +6,7 @@
 // ~30 minute idle disconnect doesn't kick us off, and reconnects
 // transparently when the underlying socket dies.
 
-const { ImapFlow } = require("imapflow");
+const { createImapClient } = require("./imap_client");
 
 const KEEPALIVE_MS = 25 * 60 * 1000; // 25 minutes
 const CONNECT_TIMEOUT_MS = 30 * 1000;
@@ -27,32 +27,17 @@ const REAP_SWEEP_MS = 60 * 1000;
 // socket instead of waiting for the server to say goodbye.
 const LOGOUT_TIMEOUT_MS = 3 * 1000;
 
-function _allowInsecureTls() {
-  return String(process.env.MAILBOX_ALLOW_INSECURE_TLS || "").trim() === "1";
-}
-
+// ImapFlow re-emits socket failures as 'error'; unhandled, one account's
+// socket hiccup would take the whole daemon down. The listener goes on before
+// connect() so a failure during the handshake is covered too. The entry-level
+// listener in _build() does the bookkeeping; this one only guarantees the
+// event is never unhandled.
 function _buildClient(account) {
-  const port = Number(account.imap.port);
-  const secure = Boolean(account.imap.secure);
-  const client = new ImapFlow({
-    host: account.imap.host,
-    port,
-    secure,
-    requireTLS: !secure,
-    auth: { user: account.email, pass: account.password },
-    tls: { rejectUnauthorized: !_allowInsecureTls(), minVersion: "TLSv1.2" },
-    logger: false,
+  return createImapClient(account, {
+    onError: (err) => {
+      process.stderr.write(`mail-use: imap connection error for ${account.email}: ${(err && err.message) || err}\n`);
+    },
   });
-  // ImapFlow is an EventEmitter and re-emits socket failures (ECONNRESET,
-  // TLS errors, server-side timeouts) as 'error'. With no listener Node turns
-  // that into an uncaught exception and the whole daemon dies because one
-  // account's socket hiccupped. Attach before connect() so a failure during
-  // the handshake is covered too. The entry-level listener in _build() does
-  // the bookkeeping; this one only guarantees the event is never unhandled.
-  client.on("error", (err) => {
-    process.stderr.write(`mail-use: imap connection error for ${account.email}: ${(err && err.message) || err}\n`);
-  });
-  return client;
 }
 
 // Close a client politely but bounded: LOGOUT if the server answers within
