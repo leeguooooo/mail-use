@@ -8,4 +8,5 @@ module.exports = {
   get smtp() { return require("./services/smtp"); },
   get email() { return require("./services/email"); },
   get sync() { return require("./services/sync"); },
+  get appleMail() { return require("./services/apple_mail"); },
 };

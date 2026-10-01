@@ -18,6 +18,7 @@ const COMMAND_GROUPS = [
   require("./commands/workflows"), // cleanup, digest, monitor
   require("./commands/daemon"),
   require("./commands/mcp"),
+  require("./commands/apple_mail"),
   require("./commands/inbox"),
 ];
 
