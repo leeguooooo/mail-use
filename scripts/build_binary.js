@@ -34,6 +34,9 @@ function bundle(entry, root, outFile, nodeMajor) {
     entry,
     "--bundle",
     "--platform=node",
+    // 显式要求把依赖打进 bundle：esbuild 0.22 曾把 platform=node 的默认改成
+    // packages=external（0.23 又改回），默认值再变时 SEA 会在运行时找不到依赖。
+    "--packages=bundle",
     `--target=node${nodeMajor}`,
     "--format=cjs",
     `--outfile=${outFile}`,
