@@ -228,10 +228,38 @@ describe("saveAccount", () => {
     expect(Object.keys(readAuth().accounts)).toEqual(["me_qq", "me_qq_2"]);
   });
 
+  it("refuses, even forced, when --id and the address name different accounts", () => {
+    accounts.saveAccount({ email: "a@qq.com", password: "1", provider: "qq", id: "first" });
+    accounts.saveAccount({ email: "b@qq.com", password: "2", provider: "qq", id: "second" });
+    const r = accounts.saveAccount({ email: "a@qq.com", password: "3", provider: "qq", id: "second" }, { force: true });
+    expect(r).toMatchObject({ success: false, error_code: "already_exists", id: "first" });
+    const auth = readAuth();
+    expect(auth.accounts.first.password).toBe("1");
+    expect(auth.accounts.second).toMatchObject({ email: "b@qq.com", password: "2" });
+  });
+
   it("rejects bad input", () => {
     expect(accounts.saveAccount({ email: "nope", password: "x" })).toMatchObject({ success: false, error_code: "invalid_argument" });
     expect(accounts.saveAccount({ email: "a@b.com", password: "" })).toMatchObject({ success: false, error_code: "invalid_argument" });
     expect(accounts.saveAccount({ email: "a@b.com", password: "x", imap_host: "h", imap_port: "99999" })).toMatchObject({ success: false });
     expect(fs.existsSync(authFile())).toBe(false);
+  });
+});
+
+describe("connection timeouts for setup checks", () => {
+  it("reach both the IMAP client and the SMTP transport", () => {
+    const { createImapClient } = require("../src/services/imap_client.js");
+    const { _buildTransportOptions } = require("../src/services/smtp.js");
+    const account = {
+      email: "me@qq.com", password: "p",
+      imap: { host: "imap.qq.com", port: 993, secure: true },
+      smtp: { host: "smtp.qq.com", port: 465, secure: true },
+      timeouts: { connectMs: 1234, socketMs: 2345 },
+    };
+    const client = createImapClient(account);
+    expect(client.options).toMatchObject({ connectionTimeout: 1234, greetingTimeout: 1234, socketTimeout: 2345 });
+    expect(_buildTransportOptions(account)).toMatchObject({ connectionTimeout: 1234, greetingTimeout: 1234, socketTimeout: 2345 });
+    const plain = _buildTransportOptions({ ...account, timeouts: undefined });
+    expect(plain.connectionTimeout).toBeUndefined();
   });
 });

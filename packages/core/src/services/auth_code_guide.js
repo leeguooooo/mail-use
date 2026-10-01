@@ -88,7 +88,7 @@ const GUIDES = {
     needs: "应用专用密码",
     url: "https://account.apple.com",
     steps: [
-      "用 Apple 账号登录上面的网站 →「登录与安全」→「App 专用密码」",
+      "Apple 账号要已开启双重认证；用它登录上面的网站 →「登录与安全」→「App 专用密码」",
       "点「生成 App 专用密码」，随便起个名字（比如 mail-use）",
       "把生成的密码（形如 abcd-efgh-ijkl-mnop）复制过来",
     ],

@@ -245,11 +245,17 @@ function saveAccount(input, opts = {}) {
 
   const lower = email.toLowerCase();
   const wantedId = String((input && input.id) || "").trim();
-  let existingId = "";
+  let emailId = "";
   for (const [id, acc] of Object.entries(auth.accounts)) {
-    const sameEmail = acc && typeof acc === "object" && String(acc.email || "").toLowerCase() === lower;
-    if (sameEmail || (wantedId && id === wantedId)) { existingId = id; break; }
+    if (acc && typeof acc === "object" && String(acc.email || "").toLowerCase() === lower) { emailId = id; break; }
   }
+  const idTaken = Boolean(wantedId && auth.accounts[wantedId]);
+  // --id naming one account while the address belongs to another: replacing
+  // either would leave the same address under two ids. Not even --force.
+  if (emailId && idTaken && emailId !== wantedId) {
+    return { success: false, error: `${email} is already account ${emailId}; id ${wantedId} is a different account`, error_code: "already_exists", id: emailId };
+  }
+  const existingId = emailId || (idTaken ? wantedId : "");
   if (existingId && !opts.force) {
     return { success: false, error: `Account already exists: ${existingId} (${email})`, error_code: "already_exists", id: existingId };
   }

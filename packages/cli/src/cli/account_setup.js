@@ -114,7 +114,11 @@ function explainFailure(e, kind) {
 async function checkAccount(entry) {
   const core = _core();
   const conn = core.providerDefaults.resolveAccountConnectionConfig(entry);
-  const account = { id: entry.id || "", email: entry.email, password: entry.password, provider: conn.provider, imap: conn.imap, smtp: conn.smtp };
+  // The connections time out on their own a little before _withTimeout gives
+  // up on them, so a stalled server can't keep a socket open in the
+  // background while an import moves on to the next mailbox.
+  const timeouts = { connectMs: Math.max(1000, CHECK_TIMEOUT_MS - 5000), socketMs: Math.max(1000, CHECK_TIMEOUT_MS - 2000) };
+  const account = { id: entry.id || "", email: entry.email, password: entry.password, provider: conn.provider, imap: conn.imap, smtp: conn.smtp, timeouts };
   const out = { imap: { success: false }, smtp: { success: false } };
 
   if (String(process.env.MAILBOX_INTERNAL_TEST_MODE || "").trim() === "1") {

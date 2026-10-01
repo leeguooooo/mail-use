@@ -15,6 +15,11 @@ function _buildTransportOptions(account) {
       rejectUnauthorized: !_allowInsecureTls(),
       minVersion: "TLSv1.2",
     },
+    ...(account.timeouts ? {
+      connectionTimeout: account.timeouts.connectMs,
+      greetingTimeout: account.timeouts.connectMs,
+      socketTimeout: account.timeouts.socketMs,
+    } : {}),
   };
   // Implicit TLS (465): no STARTTLS upgrade. For everything else (587, 25, custom),
   // require STARTTLS so a hostile MITM can't strip TLS and force plaintext auth.
@@ -80,4 +85,5 @@ async function sendMail({ account, to, cc, bcc, subject, text, html, attachments
 module.exports = {
   sendMail,
   testConnection,
+  _buildTransportOptions,
 };

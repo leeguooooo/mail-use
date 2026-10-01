@@ -74,7 +74,7 @@ mail-use apple-mail import --email you@qq.com
 | QQ 邮箱 | 网页版 [wx.mail.qq.com](https://wx.mail.qq.com) → 设置 → 账号与安全 → 安全设置 → 开启 IMAP/SMTP 服务，按提示生成授权码 |
 | 163 / 126 邮箱 | 网页版 [mail.163.com](https://mail.163.com) 或 [mail.126.com](https://mail.126.com) → 设置 → POP3/SMTP/IMAP → 开启 IMAP/SMTP 服务 → 新增授权密码 |
 | Gmail | 先在 Google 账号里开启两步验证，再到 [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) 生成应用专用密码 |
-| iCloud 邮箱 | [account.apple.com](https://account.apple.com) → 登录与安全 → App 专用密码 |
+| iCloud 邮箱 | 先给 Apple 账号开启双重认证，再到 [account.apple.com](https://account.apple.com) → 登录与安全 → App 专用密码 |
 | Outlook / Hotmail | 微软已不再允许个人账号用密码登录 IMAP，暂不支持 |
 
 命令运行时也会在屏幕上给出对应邮箱的链接和步骤，照着做就行。
