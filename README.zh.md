@@ -49,8 +49,10 @@ mail-use --help
 ```
 
 从 [GitHub Release](https://github.com/leeguooooo/mail-use/releases/latest) 拉对应平台的二进制
-（macOS arm64/x64、Linux x64），校验 sha256 后装到 `~/.local/bin`。锁版本用
-`MAIL_USE_VERSION=v2.11.2`，换目录用 `MAIL_USE_INSTALL_DIR=...`。
+（macOS arm64/x64、Linux x64/arm64），校验 sha256 后装到 `~/.local/bin`。锁版本用
+`MAIL_USE_VERSION=v2.11.2`，换目录用 `MAIL_USE_INSTALL_DIR=...`。拿不到 `.sha256` 就中止安装
+（`MAIL_USE_INSECURE=1` 可强行跳过；校验值对不上一律失败）。每个 tarball 还带签名的构建溯源：
+`gh attestation verify mail-use-<target>.tar.gz --repo leeguooooo/mail-use`。
 
 没有 npm 包。只走 GitHub Release 二进制：发版不用 `NPM_TOKEN` 和 2FA，
 装的人也不需要 Node。改名前的 `@leeguoo/mailbox-cli` 停在旧版本，不再更新。
@@ -58,18 +60,34 @@ mail-use --help
 ### 升级
 
 ```bash
-mail-use upgrade --check        # 有没有新版本
-mail-use upgrade                # 下载、校验 sha256、原地替换、重启 daemon
+mail-use upgrade --check        # 有没有新版本（`mail-use 3.3.1 -> 3.3.2`）
+mail-use upgrade --json         # 同样的检查，输出 JSON：name、current、latest、update_available、skills、install_channel
+mail-use upgrade                # 只升 CLI：下载、校验 sha256、核对新二进制版本、原子替换、重启 daemon
+mail-use upgrade --skills       # 同上，再刷新本工具自己的 skill（CLI 已是最新时只刷 skill）
 mail-use upgrade --tag v3.1.0   # 装指定版本（回滚也走这个）
 ```
+
+退出码 `0` 表示命令正常完成（有新版本不算错误）；`2` 表示检查、下载或校验失败（已装的二进制原样保留）；
+`1` 表示这份安装归 Homebrew、npm 或源码检出管，拒绝升级并打印对应命令，或者有 skill 没刷新成功。
+
+不带 `--skills` 的 `upgrade` 只列出找到的 skill 和刷新它的命令，不动它们。`upgrade --skills` 才刷新：Claude Code 插件（执行
+`claude plugin update mail-use@leeguooooo-plugins`，`claude` 不在 PATH 上就打印出来）、
+链到 `~/.agents/skills`、`~/.claude/skills` 或 `~/.codex/skills` 的 git 检出
+（`git pull --ff-only`，不强推）、`npx skills add` 复制的目录（打印
+`npx skills update mail-use`，由你来跑）。
+
+其他命令每天最多查一次新版本（缓存在 `${XDG_CACHE_HOME:-~/.cache}/mail-use/update-check.json`，
+超时 2 秒，失败不出声），有新版时往 **stderr** 打一行，stdout 的 JSON 不受影响：
+`mail-use 3.3.2 is available (you have 3.3.1). Upgrade: mail-use upgrade`。设置 `CI`、
+`MAIL_USE_NO_UPDATE_CHECK` 或 `USE_NO_UPDATE_CHECK` 任意一个即可关闭。
 
 daemon 在跑的时候会替你留意新版本：每天一次对 GitHub releases API 的匿名 GET
 （`MAILBOX_UPDATE_CHECK_HOURS`，设 `0` 关闭），结果出现在
 `mail-use daemon status --json` 的 `update` 字段。它只报告，不下载也不安装。
 
 `upgrade` 不会自动执行，也不会自己在后台跑：一个悄悄替换自身可执行文件的工具是供应链
-意外，不是便利。校验和跟发布的 `.sha256` 对不上就拒绝安装；在源码检出里直接拒绝运行
-（那里的 `process.execPath` 是你的 `node`）。重跑 `curl … install.sh | sh` 效果一样。
+意外，不是便利。发布的 `.sha256` 缺失或对不上、新二进制报的版本不对，都拒绝安装；
+Homebrew、npm 或源码检出的安装直接拒绝运行。重跑 `curl … install.sh | sh` 效果一样。
 
 ### 装成 AI Skill（Claude Code / Cursor 等）
 
@@ -205,7 +223,8 @@ session 变多不会让 IMAP 连接变多。macOS 上连着 3 个账号时的实
 | `MAILBOX_POOL_IDLE_MS` | `600000` | 空闲多久回收连接（`0` 关闭回收） |
 | `MAILBOX_POOL_KEEP_WARM` | `1` | 回收时每账号保留几条热连接 |
 | `MAILBOX_NO_DAEMON` | 未设置 | 设为 `1` 让 CLI 完全跳过 daemon |
-| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | daemon 的被动版本检查（`0` 关闭） |
+| `MAILBOX_UPDATE_CHECK_HOURS` | `24` | daemon 的被动版本检查（`0` 同时关闭 CLI 每天的新版提示） |
+| `MAIL_USE_NO_UPDATE_CHECK` / `USE_NO_UPDATE_CHECK` | 未设置 | 设任意值关闭 CLI 每天的新版提示 |
 
 ## AI 集成说明
 
@@ -254,3 +273,7 @@ OpenClaw 负责渠道投递与定时调度；mail-use 只输出结构化 JSON �
 openclaw skills list --eligible
 openclaw skills check
 ```
+
+## 作者
+
+**郭立（Guo Li / leeguoo）** 开发 —— [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · 更多工具见 [*-use 家族](https://github.com/leeguooooo/plugins)。

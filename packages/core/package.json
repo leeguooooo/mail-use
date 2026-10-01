@@ -15,6 +15,6 @@
     "vitest": "^2.1.9"
   },
   "scripts": {
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   }
 }

@@ -25,9 +25,13 @@ function _readJson(p) {
   }
 }
 
+// Sync state names every account id and email address: owner only, like
+// auth.json and the cache DB. chmod after the write because writeFileSync's
+// mode only applies when it creates the file.
 function _writeJson(p, value) {
-  fs.mkdirSync(require("path").dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(value, null, 2) + "\n", "utf8");
+  fs.mkdirSync(require("path").dirname(p), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(p, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  try { fs.chmodSync(p, 0o600); } catch { /* ignore */ }
 }
 
 function _loadSyncState() {
@@ -73,7 +77,7 @@ async function force({ account_id = "", full = false } = {}) {
   // Ensure parent dir exists. Don't pre-create a 0-byte file: sql.js treats
   // an empty Uint8Array as a corrupt DB. The first write session creates it.
   try {
-    fs.mkdirSync(require("path").dirname(pc.emailSyncDb), { recursive: true });
+    fs.mkdirSync(require("path").dirname(pc.emailSyncDb), { recursive: true, mode: 0o700 });
   } catch {
     // ignore
   }
@@ -126,6 +130,7 @@ async function force({ account_id = "", full = false } = {}) {
           const removed = await syncDb.removeEmailsFromCache({
             dbPath: pc.emailSyncDb,
             accountId: a.id,
+            folder: "INBOX",
             uids: orphanedUids,
           });
           if (removed && removed.success) emailsDeleted = orphanedUids.length;

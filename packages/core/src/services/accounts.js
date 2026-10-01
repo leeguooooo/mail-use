@@ -13,9 +13,25 @@ function _readJsonFile(p) {
   }
 }
 
+// auth.json holds plaintext IMAP/SMTP passwords. It must never be readable by
+// other users: 0600 on create, and chmod afterwards because writeFileSync's
+// mode is ignored when the file already exists.
+const AUTH_FILE_MODE = 0o600;
+
 function _writeJsonFile(p, value) {
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(value, null, 2) + "\n", "utf8");
+  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(p, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: AUTH_FILE_MODE });
+  try { fs.chmodSync(p, AUTH_FILE_MODE); } catch { /* ignore */ }
+}
+
+// Tighten an auth.json written by an older version (or by hand) with the
+// default 0644. Best-effort: a read-only or mode-less filesystem is not an
+// error worth failing a command over.
+function _tightenAuthFile(p) {
+  try {
+    const st = fs.statSync(p);
+    if ((st.mode & 0o077) !== 0) fs.chmodSync(p, AUTH_FILE_MODE);
+  } catch { /* ignore */ }
 }
 
 function _normalizeAuth(auth) {
@@ -30,11 +46,13 @@ function _hasConfigDirOverride() {
   return Boolean(raw && raw !== ".");
 }
 
+// Only fixed per-user locations. There used to be a `./data/accounts.json`
+// candidate resolved against the cwd, which meant running mail-use inside any
+// directory that happened to contain such a file would import its credentials
+// as this user's accounts.
 function _legacyAccountsCandidates() {
-  const repoData = path.resolve(process.cwd(), "data", "accounts.json");
   const home = require("os").homedir();
   return [
-    repoData,
     path.join(home, ".mcp-email", "accounts.json"),
     path.join(home, ".config", "mcp-email-service", "accounts.json"),
     path.join(home, ".config", "mailbox", "accounts.json"),
@@ -46,7 +64,10 @@ function _legacyAccountsCandidates() {
 function loadAuth() {
   const p = paths.getPathConfig();
   const auth = _readJsonFile(p.authJson);
-  if (auth) return { success: true, auth: _normalizeAuth(auth), migrated: false };
+  if (auth) {
+    _tightenAuthFile(p.authJson);
+    return { success: true, auth: _normalizeAuth(auth), migrated: false };
+  }
 
   if (_hasConfigDirOverride()) {
     return { success: true, auth: _normalizeAuth(null), migrated: false };

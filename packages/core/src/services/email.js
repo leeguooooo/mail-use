@@ -20,7 +20,7 @@ const {
 } = require("./email/body");
 
 const accounts = require("./accounts");
-const { withImapClient } = require("./imap");
+const { withImapClient, abandonClient } = require("./imap");
 const { sendMail } = require("./smtp");
 const { formatDateTime, firstAddress, hasAttachmentsFromBodyStructure, attachmentFlags, formatSize } = require("./format");
 const syncDb = require("../storage/sync_db");
@@ -199,7 +199,7 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
       result.all_uids_are_complete = true;
     }
     return result;
-  });
+  }, { idempotent: true });
 }
 
 async function listEmails({
@@ -239,6 +239,10 @@ async function listEmails({
     try {
       const pc = paths.getPathConfig();
       const resolved = account_id ? accounts.getAccountByIdOrEmail(account_id) : null;
+      // An unknown account must be an error, not "no account filter": falling
+      // through with an empty id served every account's cached mail as if it
+      // were this one's, success:true.
+      if (resolved && !resolved.success) return resolved;
       const resolvedId = resolved && resolved.success ? resolved.account.id : "";
       const cache = await require("../storage/sync_db").listEmailsFromCache({
         dbPath: pc.emailSyncDb,
@@ -668,7 +672,13 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
       continue;
     }
     try {
+      // The client this account's scan is running on, so a timeout can close
+      // it instead of leaving it scanning (and pinned in the pool) unobserved.
+      let workClient = null;
+      let abandoned = false;
       const accountWork = withImapClient(acc, async (client) => {
+        workClient = client;
+        if (abandoned) abandonClient(client);
         const folderPaths = scanAll
           ? _selectableFoldersFor(await _listMailboxes(client))
           : [openFolder];
@@ -696,12 +706,16 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
         const out = { success: true, total_found: totalCombined, emails: emailsCombined };
         if (folderErrors.length) out.folder_errors = folderErrors;
         return out;
-      });
+      }, { idempotent: true });
       // Hard-bound the account by whatever time remains in the overall deadline,
       // so a single un-cooperative imap op (QQ/163 scan / stuck connect) can't
       // blow past --timeout. On timeout we keep the partial emails gathered so far.
       const remaining = timeoutMs > 0 ? Math.max(0, started + timeoutMs - Date.now()) : 0;
       const r = await _raceTimeout(accountWork, remaining, () => {
+        // Nobody will read this account's result any more. Close its socket so
+        // the orphaned scan stops now rather than running on in the daemon.
+        abandoned = true;
+        if (workClient) abandonClient(workClient);
         timed_out = true;
         pending_accounts.push(acc.id || acc.email || "");
         return { success: true, total_found: 0, emails: [], account_timed_out: true };
@@ -868,7 +882,7 @@ async function showEmail({
       from_cache: false,
       list_unsubscribe: _extractListUnsubscribe(parsed),
     };
-  });
+  }, { idempotent: true });
 }
 
 // Batch fetch multiple emails over a single IMAP connection. Same per-email
@@ -954,7 +968,7 @@ async function showEmails({
       folder: openFolder,
       account_id: acc.account.id,
     };
-  });
+  }, { idempotent: true });
 }
 
 // Resolve which folder an email lives in: an explicit folder wins, otherwise the
@@ -1078,6 +1092,7 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
       await syncDb.updateEmailFlags({
         dbPath,
         accountId: acc.account.id,
+        folder: openFolder,
         uids: successfulUids,
         unread: markAs === "unread",
       });
@@ -1177,9 +1192,12 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
     }
     const deleted = results.filter((r) => r.success).length;
     if (deleted > 0) {
+      // UIDs are per-folder: scope the removal to the folder we deleted from,
+      // or the same uid in another folder vanishes from the cache too.
       await syncDb.removeEmailsFromCache({
         dbPath: paths.getPathConfig().emailSyncDb,
         accountId: acc.account.id,
+        folder: openFolder,
         uids: results.filter((r) => r.success).map((r) => r.email_id),
       });
     }
@@ -1356,7 +1374,7 @@ async function forwardEmail({ email_id, to, body = "", folder = "INBOX", no_atta
         const uid = Number(email_id);
         if (!Number.isFinite(uid)) return null;
         return client.fetchOne(uid, { source: true }, { uid: true });
-      });
+      }, { idempotent: true });
       if (fetched && fetched.source) {
         const parsed = await _safeParse(fetched.source);
         let totalBytes = 0;
@@ -1417,7 +1435,7 @@ async function listFolders({ account_id } = {}) {
       total_folders: folders.length,
       account: acc.account.email,
     };
-  });
+  }, { idempotent: true });
 }
 
 async function downloadAttachments({ email_id, folder = "INBOX", account_id, output_dir = "" } = {}) {
@@ -1577,6 +1595,21 @@ async function flagEmail({ email_id, set_flag, flag_type = "flagged", folder = "
     await client.mailboxOpen(openFolder);
     if (set) await client.messageFlagsAdd(uid, [flag], { uid: true });
     else await client.messageFlagsRemove(uid, [flag], { uid: true });
+    // Keep the cache in step with the server for the flags it mirrors, so a
+    // cached list right after `flag --type read` doesn't contradict it.
+    if (flag === "\\Seen" || flag === "\\Flagged") {
+      const dbPath = paths.getPathConfig().emailSyncDb;
+      await syncDb.updateEmailFlags({
+        dbPath,
+        accountId: acc.account.id,
+        folder: openFolder,
+        uids: [String(uid)],
+        ...(flag === "\\Seen" ? { unread: !set } : { flagged: set }),
+      });
+      if (flag === "\\Seen") {
+        await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: openFolder });
+      }
+    }
     return {
       success: true,
       message: `Flag "${flagType}" ${set ? "set" : "unset"}`,
@@ -1615,14 +1648,26 @@ async function moveEmails({ email_ids, target_folder, source_folder = "INBOX", a
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(src);
     const failed_ids = [];
+    const moved_ids = [];
     let moved = 0;
     for (const uid of ids) {
       try {
         await client.messageMove(uid, tgt, { uid: true });
         moved += 1;
+        moved_ids.push(String(uid));
       } catch {
         failed_ids.push(String(uid));
       }
+    }
+    if (moved_ids.length) {
+      // The moved messages no longer exist under these UIDs in the source
+      // folder (the target assigns new ones). Drop them from the cache so a
+      // cached list doesn't keep showing them where they were, and invalidate
+      // both folders' unread snapshots — unread mail changed sides.
+      const dbPath = paths.getPathConfig().emailSyncDb;
+      await syncDb.removeEmailsFromCache({ dbPath, accountId: acc.account.id, folder: src, uids: moved_ids });
+      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: src });
+      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: tgt });
     }
     return {
       success: failed_ids.length === 0,
@@ -1680,8 +1725,21 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
   let resolveDone;
   const done = new Promise((r) => { resolveDone = r; });
 
-  await client.connect();
-  await client.mailboxOpen(openFolder);
+  // An unhandled 'error' event would crash the process. The 'close' handler
+  // below is what reports the disconnect; this only keeps the error handled.
+  client.on("error", (err) => {
+    if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: watch connection error for ${acc.account.email}: ${(err && err.message) || err}\n`);
+  });
+
+  try {
+    await client.connect();
+    await client.mailboxOpen(openFolder);
+  } catch (e) {
+    // Don't leak a connected socket when the folder can't be opened.
+    try { await client.logout(); } catch { /* ignore */ }
+    try { if (typeof client.close === "function") client.close(); } catch { /* ignore */ }
+    throw e;
+  }
   let lastUid = client.mailbox && client.mailbox.uidNext ? Number(client.mailbox.uidNext) : 0;
 
   // Serialize concurrent `exists` events: if a fetch is already running,
@@ -1726,7 +1784,7 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
             const item = {
               id: String(uidNum),
               uid: String(uidNum),
-              gid: _gid(acc.account.id, folder, uidNum),
+              gid: _gid(acc.account.id, openFolder, uidNum),
               message_id: env.messageId || "",
               subject: env.subject || "",
               from: firstAddress(env.from),

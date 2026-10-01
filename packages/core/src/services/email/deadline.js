@@ -12,8 +12,10 @@ function _deadlineExceeded(started, timeoutMs, now) {
 // doesn't settle within `ms`. The cooperative _deadlineExceeded checks only fire
 // BETWEEN imap operations; a single slow op (e.g. a QQ/163 client-side scan of a
 // whole INBOX, or a stuck connect) can block past the deadline. This guarantees
-// searchEmails returns even then. The orphaned op is harmless for the one-shot
-// CLI (process.exit cleans up); the daemon closes the connection on its own.
+// searchEmails returns even then. Returning is not the same as stopping: the
+// orphaned op keeps its IMAP connection busy, which in the daemon means a
+// pooled client pinned in-use and still scanning. `onTimeout` is where the
+// caller must close that connection (searchEmails does, via abandonClient).
 // `promise` rejections pass through so existing try/catch handling still runs.
 function _raceTimeout(promise, ms, onTimeout) {
   if (!(ms > 0)) return promise;
