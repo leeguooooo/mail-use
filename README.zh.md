@@ -49,8 +49,10 @@ mail-use --help
 ```
 
 从 [GitHub Release](https://github.com/leeguooooo/mail-use/releases/latest) 拉对应平台的二进制
-（macOS arm64/x64、Linux x64），校验 sha256 后装到 `~/.local/bin`。锁版本用
-`MAIL_USE_VERSION=v2.11.2`，换目录用 `MAIL_USE_INSTALL_DIR=...`。
+（macOS arm64/x64、Linux x64/arm64），校验 sha256 后装到 `~/.local/bin`。锁版本用
+`MAIL_USE_VERSION=v2.11.2`，换目录用 `MAIL_USE_INSTALL_DIR=...`。拿不到 `.sha256` 就中止安装
+（`MAIL_USE_INSECURE=1` 可强行跳过；校验值对不上一律失败）。每个 tarball 还带签名的构建溯源：
+`gh attestation verify mail-use-<target>.tar.gz --repo leeguooooo/mail-use`。
 
 没有 npm 包。只走 GitHub Release 二进制：发版不用 `NPM_TOKEN` 和 2FA，
 装的人也不需要 Node。改名前的 `@leeguoo/mailbox-cli` 停在旧版本，不再更新。
