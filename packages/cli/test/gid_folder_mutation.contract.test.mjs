@@ -7,8 +7,8 @@ import fs from "node:fs";
 import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const { _parseRef, _folderGroups } = require("../src/mcp_server.js");
-const { _isSpecialMutationFolder } = require("../src/main.js");
+const { parseEmailRef: _parseRef, resolveFolderGroups } = require("../src/cli/targets.js");
+const { isSpecialMutationFolder: _isSpecialMutationFolder } = require("../src/cli/targets.js");
 
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
@@ -33,16 +33,18 @@ describe("review-fix: 3-part gid parsing + folder-honoring mutations", () => {
     expect(r.ids).toEqual(["401"]);
   });
 
-  it("_folderGroups keys ids by their gid folder (explicit folder overrides)", async () => {
+  it("resolveFolderGroups keys ids by their gid folder (explicit folder overrides)", async () => {
     const refs = [
       { id: "1", account_id: "mock_acc", folder: "Trash" },
       { id: "2", account_id: "mock_acc", folder: "Sent" },
       { id: "3", account_id: "mock_acc", folder: "Trash" },
     ];
-    const grouped = await _folderGroups(refs, "mock_acc", "");
+    // Mirrors core: a ref that names its folder keeps it.
+    const email = { resolveEmailFolder: async ({ folder }) => folder || "INBOX" };
+    const grouped = await resolveFolderGroups(email, refs, "mock_acc", "");
     expect(grouped.get("Trash")).toEqual(["1", "3"]);
     expect(grouped.get("Sent")).toEqual(["2"]);
-    const forced = await _folderGroups(refs, "mock_acc", "Archive");
+    const forced = await resolveFolderGroups(email, refs, "mock_acc", "Archive");
     expect([...forced.keys()]).toEqual(["Archive"]);
   });
 

@@ -13,7 +13,6 @@ const crypto = require("crypto");
 const fs = require("fs");
 const https = require("https");
 const os = require("os");
-const net = require("net");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { isPackagedBinary } = require("./packaged");
@@ -267,19 +266,7 @@ function verifyBinary(file, wantTag) {
 // Seen live on 3.3.1 — the daemon was demonstrably up (pid 79961) and
 // `was_running` still came back false. A socket connect is cheaper anyway.
 function daemonResponds() {
-  const { getSocketPath } = require("./daemon_paths");
-  const sockPath = getSocketPath();
-  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    const c = net.createConnection(sockPath);
-    // A successful connect is enough: only a live daemon binds this path, and a
-    // stale socket file refuses the connection.
-    c.once("connect", () => { try { c.end(); } catch { /* ignore */ } done(true); });
-    c.once("error", () => done(false));
-    setTimeout(() => { try { c.destroy(); } catch { /* ignore */ } done(false); }, 1000);
-  });
+  return require("./daemon_admin").socketAccepts({ timeoutMs: 1000 });
 }
 
 // Release tags are vX.Y.Z (optionally -prerelease). Anything else would be

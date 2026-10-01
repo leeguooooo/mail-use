@@ -7,7 +7,7 @@ import fs from "node:fs";
 import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const { _groupTargets, _groupsBreakdown } = require("../src/main.js");
+const { groupTargets: _groupTargets, groupsBreakdown: _groupsBreakdown } = require("../src/cli/targets.js");
 
 function tmpRoot(name) {
   return path.join(import.meta.dirname, ".tmp", name);
