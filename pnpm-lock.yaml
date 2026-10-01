@@ -76,8 +76,8 @@ importers:
         specifier: ^3.9.32
         version: 3.9.32
       nodemailer:
-        specifier: ^6.9.16
-        version: 6.10.1
+        specifier: ^10.0.13
+        version: 10.0.13
       sql.js:
         specifier: ^1.14.2
         version: 1.14.2
@@ -1652,10 +1652,6 @@ packages:
   nodemailer@10.0.13:
     resolution: {integrity: sha512-SzG86OlvcW/NNhUFC6uROMwRTL4n7MswfQqC/T8mhkmnY1YVa23zUEMYi4ijSeXSl9GLz9ZeTJDUatEDuY5FeQ==}
     engines: {node: '>=20.0.0'}
-
-  nodemailer@6.10.1:
-    resolution: {integrity: sha512-Z+iLaBGVaSjbIzQ4pX6XV41HrooLsQ10ZWPUehGmuantvzWoDVBnmsdUcOIDM1t+yPor5pDhVlDESgOMEGxhHA==}
-    engines: {node: '>=6.0.0'}
 
   nodemailer@7.0.13:
     resolution: {integrity: sha512-PNDFSJdP+KFgdsG3ZzMXCgquO7I6McjY2vlqILjtJd0hy8wEvtugS9xKRF2NWlPNGxvLCXlTNIae4serI7dinw==}
@@ -3988,8 +3984,6 @@ snapshots:
       skin-tone: 2.0.0
 
   nodemailer@10.0.13: {}
-
-  nodemailer@6.10.1: {}
 
   nodemailer@7.0.13: {}
 

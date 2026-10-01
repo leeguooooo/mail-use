@@ -8,7 +8,7 @@
     "@mail-use/shared": "workspace:*",
     "imapflow": "^1.0.0",
     "mailparser": "^3.9.32",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^10.0.13",
     "sql.js": "^1.14.2"
   },
   "devDependencies": {
