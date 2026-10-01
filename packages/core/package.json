@@ -7,9 +7,9 @@
   "dependencies": {
     "@mail-use/shared": "workspace:*",
     "imapflow": "^1.0.0",
-    "mailparser": "^3.7.2",
+    "mailparser": "^3.9.32",
     "nodemailer": "^6.9.16",
-    "sql.js": "^1.13.0"
+    "sql.js": "^1.14.2"
   },
   "devDependencies": {
     "vitest": "^2.1.9"
