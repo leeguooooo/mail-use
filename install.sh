@@ -107,11 +107,14 @@ fi
 tar -xzf "$tmp/$asset" -C "$tmp"
 # Legacy archives contain a binary named "mailbox".
 [ -f "$tmp/mail-use" ] || [ ! -f "$tmp/mailbox" ] || mv "$tmp/mailbox" "$tmp/mail-use"
-[ -f "$tmp/mail-use" ] || err "archive did not contain a 'mail-use' binary"
+[ -f "$tmp/mail-use" ] && [ ! -L "$tmp/mail-use" ] || err "archive did not contain a 'mail-use' binary"
 
 mkdir -p "$INSTALL_DIR"
-mv "$tmp/mail-use" "$INSTALL_DIR/mail-use"
-chmod +x "$INSTALL_DIR/mail-use"
+# Stage next to the target, then rename over it: the swap is atomic, a failed
+# copy never leaves a half-written binary, and a running daemon keeps its inode.
+staged="$INSTALL_DIR/.mail-use.install.$$"
+install -m 0755 "$tmp/mail-use" "$staged" || { rm -f "$staged"; err "could not write to $INSTALL_DIR"; }
+mv -f "$staged" "$INSTALL_DIR/mail-use" || { rm -f "$staged"; err "could not replace $INSTALL_DIR/mail-use"; }
 
 # Keep the old command name working for anyone with `mailbox ...` in scripts/skills.
 ln -sf "$INSTALL_DIR/mail-use" "$INSTALL_DIR/mailbox" 2>/dev/null || true

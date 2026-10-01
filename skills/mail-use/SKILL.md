@@ -41,9 +41,8 @@ These commands/flags require **mail-use ≥ 2.11.0**:
 `--format compact|jsonl`, `email recent`, `cleanup`, `--since`, `--account-unread`,
 `--text-only`, the 3-part gid (`account_id:folder:uid`), and `search --timeout`.
 
-Probe before relying on them: `mail-use --version`. To update, prefer `mail-use upgrade`
-(`mail-use upgrade --check` reports without changing anything; `--tag vX.Y.Z` pins or rolls
-back). Re-running the installer above works too. On an older CLI, use these fallbacks (all available
+Probe before relying on them: `mail-use --version`. To update, see [Upgrade](#upgrade)
+(`--tag vX.Y.Z` pins or rolls back). Re-running the installer above works too. On an older CLI, use these fallbacks (all available
 since early versions):
 
 | Newer | Fallback on < 2.11 |
@@ -298,6 +297,18 @@ Measured (Gmail INBOX, M2 MacBook over residential WAN):
 | `email folders` | 5.0s | 0.85s | n/a |
 | 5 sequential `email list` | 25s | 5.3s | **0.83s** |
 | 3 parallel `email show` | ~15s | 2.7s | **0.88s** |
+
+## Upgrade
+
+When any `mail-use` command prints `mail-use X is available`, tell the user and offer to run
+`mail-use upgrade` (CLI only; add `--skills` to also refresh this skill, `--tag vX.Y.Z` to pin
+a release). Check without changing anything: `mail-use upgrade --check` (or `--json`). The user
+may also just say "升级 mail-use" / "upgrade mail-use". Exit 1 with a `brew`/`npm`/`git` command
+means another manager owns this install: relay that command instead of retrying.
+
+If the skill came from somewhere `upgrade` can't refresh:
+- Claude Code plugin: `claude plugin update mail-use@leeguooooo-plugins`
+- Whole family: `curl -fsSL https://raw.githubusercontent.com/leeguooooo/plugins/main/upgrade-use-family.sh | sh`
 
 ## Reference
 
