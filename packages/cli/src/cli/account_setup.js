@@ -78,7 +78,7 @@ function planAccount(email, { overrides = {}, mail = null } = {}) {
 
 function printGuide(email, guide) {
   prompt.say("");
-  prompt.say(`${email} 是${guide.label}，需要一个「${guide.needs}」（不是平时登录用的密码）：`);
+  prompt.say(`${email} 是 ${guide.label}，需要一个「${guide.needs}」（不是平时登录用的密码）：`);
   if (guide.url) prompt.say(`  打开：${guide.url}`);
   guide.steps.forEach((s, i) => prompt.say(`  ${i + 1}. ${s}`));
   prompt.say("");

@@ -79,12 +79,15 @@ mail-use mcp config --json   # prints a paste-ready mcpServers entry
 If the user hasn't done step 1, every CLI call will fail with `command not found`.
 Always probe with `mail-use --version` first when in doubt.
 
-**The user wants to read the same mail themselves** (Apple Mail on the Mac, or iPhone):
-run `mail-use apple-mail` (needs mail-use ≥ 3.6). It builds a configuration profile from the
-configured accounts and opens it; tell the user the one manual step it prints — System
-Settings → General → Device Management → install "mail-use 邮箱账号". For an iPhone use
-`--output <file> --no-open` and have them AirDrop it. Never paste the profile's contents into
-chat: it carries the passwords.
+**Apple Mail, both ways** (mail-use ≥ 3.7). Run `mail-use apple-mail status --json` first.
+- mail-use → Apple Mail: `mail-use apple-mail`. It opens System Settings on the right page; tell the
+  user to double-click "mail-use 邮箱账号", click 安装, enter the Mac password, within 5 minutes.
+  Mailboxes already in Apple Mail are skipped. iPhone: `--output <file> --no-open`, AirDrop it.
+- Apple Mail → mail-use: `mail-use apple-mail import --json` returns `pending` mailboxes with the
+  provider's authorization-code URL and steps; relay them, then have the user run
+  `mail-use apple-mail import` in their own terminal (hidden prompt). Never ask for the code in chat.
+- Neither side: `mail-use account add` (interactive, auto-detects QQ/163/126/Gmail/iCloud servers).
+- Never paste a profile's or auth.json's contents into chat: they carry the passwords.
 
 ## How to drive this CLI from an agent loop
 
