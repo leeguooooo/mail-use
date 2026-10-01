@@ -13,6 +13,15 @@ function _errMsg(e) {
   return (e && e.message) || "failed";
 }
 
+// imapflow's messageFlagsAdd/Remove, messageMove and messageDelete resolve to
+// false when the server answers NO instead of throwing, so a rejected command
+// has to be turned into an error here or it would be reported as done.
+async function _attempt(runCommand, range) {
+  const res = await runCommand(range);
+  if (res === false) throw new Error("server rejected the command");
+  return res;
+}
+
 // runCommand(range: string) issues the IMAP command for a UID set string.
 // Returns Map<number uid, string|null error>.
 async function _runBatched(uids, runCommand, { chunkSize = UID_CHUNK } = {}) {
@@ -20,7 +29,7 @@ async function _runBatched(uids, runCommand, { chunkSize = UID_CHUNK } = {}) {
   const unique = [...new Set((uids || []).map(Number))];
   for (const chunk of _chunk(unique, chunkSize)) {
     try {
-      await runCommand(_uidSetString(chunk));
+      await _attempt(runCommand, _uidSetString(chunk));
       for (const u of chunk) outcome.set(u, null);
     } catch (batchErr) {
       if (chunk.length === 1) {
@@ -29,7 +38,7 @@ async function _runBatched(uids, runCommand, { chunkSize = UID_CHUNK } = {}) {
       }
       for (const u of chunk) {
         try {
-          await runCommand(String(u));
+          await _attempt(runCommand, String(u));
           outcome.set(u, null);
         } catch (e) {
           outcome.set(u, _errMsg(e));

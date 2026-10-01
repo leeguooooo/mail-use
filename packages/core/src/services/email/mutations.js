@@ -201,8 +201,13 @@ async function flagEmail({ email_id, set_flag, flag_type = "flagged", folder = "
 
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    if (set) await client.messageFlagsAdd(uid, [flag], { uid: true });
-    else await client.messageFlagsRemove(uid, [flag], { uid: true });
+    const ok = set
+      ? await client.messageFlagsAdd(uid, [flag], { uid: true })
+      : await client.messageFlagsRemove(uid, [flag], { uid: true });
+    // imapflow resolves false (rather than throwing) when the server says NO.
+    if (ok === false) {
+      return { success: false, error: `Server rejected flag "${flagType}" on ${uid}`, error_code: "operation_failed", email_id: String(uid), folder: openFolder };
+    }
     // Keep the cache in step with the server for the flags it mirrors, so a
     // cached list right after `flag --type read` doesn't contradict it.
     if (flag === "\\Seen" || flag === "\\Flagged") {

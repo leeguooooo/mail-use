@@ -103,9 +103,14 @@ function _uidMatcher(range) {
   return (uid) => tests.some((t) => t(Number(uid)));
 }
 
+// A predicate returning true makes the command throw; returning "false" makes
+// it resolve to false, which is how imapflow reports a NO from the server.
 function _maybeFail(op, range) {
   const pred = getMockFailure(op);
-  if (pred && pred(range)) throw new Error(`mock ${op} failure`);
+  const hit = pred ? pred(range) : false;
+  if (hit === "false") return true;
+  if (hit) throw new Error(`mock ${op} failure`);
+  return false;
 }
 
 class MockImapClient {
@@ -286,7 +291,7 @@ class MockImapClient {
 
   async messageFlagsAdd(uids, flags) {
     this._log("messageFlagsAdd", { range: uids, flags });
-    _maybeFail("messageFlagsAdd", uids);
+    if (_maybeFail("messageFlagsAdd", uids)) return false;
     const mb = this._mb();
     const match = _uidMatcher(uids);
     for (const m of mb.messages || []) {
@@ -299,7 +304,7 @@ class MockImapClient {
 
   async messageFlagsRemove(uids, flags) {
     this._log("messageFlagsRemove", { range: uids, flags });
-    _maybeFail("messageFlagsRemove", uids);
+    if (_maybeFail("messageFlagsRemove", uids)) return false;
     const mb = this._mb();
     const match = _uidMatcher(uids);
     for (const m of mb.messages || []) {
@@ -312,7 +317,7 @@ class MockImapClient {
 
   async messageMove(uids, target) {
     this._log("messageMove", { range: uids, target });
-    _maybeFail("messageMove", uids);
+    if (_maybeFail("messageMove", uids)) return false;
     const src = getMailbox(this._account.id, this._mailbox);
     const dst = getMailbox(this._account.id, target);
     if (!src) throw new Error(`Mailbox not found: ${this._mailbox}`);
@@ -334,7 +339,7 @@ class MockImapClient {
 
   async messageDelete(uids) {
     this._log("messageDelete", { range: uids });
-    _maybeFail("messageDelete", uids);
+    if (_maybeFail("messageDelete", uids)) return false;
     const src = this._mb();
     const match = _uidMatcher(uids);
     src.messages = (src.messages || []).filter((m) => !match(m.uid));

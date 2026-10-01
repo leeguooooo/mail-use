@@ -104,6 +104,30 @@ describe("C10: batch IMAP mutations issue one command per set", () => {
     expect(ops("messageMove")).toHaveLength(1);
   });
 
+  it("a command the server rejects (imapflow resolves false) is not reported as done", async () => {
+    setMockFailure("messageFlagsAdd", (range) => (_uidMatcher(range)(102) ? "false" : false));
+    const r = await email.markEmails({ email_ids: ["101", "102", "103"], mark_as: "read", account_id: "mock_acc" });
+    expect(r.success).toBe(false);
+    expect(r.marked_count).toBe(2);
+    const byId = Object.fromEntries(r.results.map((x) => [x.email_id, x]));
+    expect(byId["102"].success).toBe(false);
+    expect(byId["102"].error).toMatch(/rejected/);
+  });
+
+  it("a rejected move is reported as failed", async () => {
+    setMockFailure("messageMove", () => "false");
+    const r = await email.moveEmails({ email_ids: ["101", "102"], target_folder: "Trash", account_id: "mock_acc" });
+    expect(r.moved_count).toBe(0);
+    expect(r.failed_ids.sort()).toEqual(["101", "102"]);
+  });
+
+  it("a rejected flag is reported as failed", async () => {
+    setMockFailure("messageFlagsAdd", () => "false");
+    const r = await email.flagEmail({ email_id: "102", set_flag: true, flag_type: "flagged", folder: "INBOX", account_id: "mock_acc" });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/rejected/);
+  });
+
   it("a failing move batch is retried per uid", async () => {
     setMockFailure("messageMove", (range) => _uidMatcher(range)(102));
     const r = await email.moveEmails({ email_ids: ["101", "102", "103"], target_folder: "Trash", account_id: "mock_acc" });
