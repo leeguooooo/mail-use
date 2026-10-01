@@ -199,7 +199,102 @@ function getAllAccountsResolved() {
   return { success: true, accounts: out, count: out.length, auth };
 }
 
+// An auth.json key for a new account: "<local-part>_<provider>", lowercased
+// and limited to [a-z0-9_] so it is safe to type as --account-id, with a
+// numeric suffix when taken.
+function _deriveAccountId(email, provider, taken) {
+  const local = String(email || "").split("@")[0].toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "account";
+  const prov = String(provider || "custom").toLowerCase().replace(/[^a-z0-9]+/g, "_") || "custom";
+  const base = `${local}_${prov}`;
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    if (!taken.has(`${base}_${n}`)) return `${base}_${n}`;
+  }
+}
+
+function _portOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : NaN;
+}
+
+// Add one account to auth.json, keeping every other account as it is.
+//
+// input: { email, password, provider?, id?, imap_host?, imap_port?,
+// smtp_host?, smtp_port?, imap_secure?, smtp_secure?, description? }.
+// Server fields are stored only when given: for a known provider leaving them
+// out lets provider_defaults.js stay the source of truth.
+//
+// An existing account with the same email (or the same explicit id) is an
+// error unless opts.force, which replaces it in place under its old id.
+// The result never contains the password.
+function saveAccount(input, opts = {}) {
+  const email = String((input && input.email) || "").trim();
+  const password = input && input.password != null ? String(input.password) : "";
+  if (!email || !/^[^@\s]+@[^@\s]+$/.test(email)) return { success: false, error: `Invalid email address: ${email}`, error_code: "invalid_argument" };
+  if (!password) return { success: false, error: "Missing password", error_code: "invalid_argument" };
+  const provider = String((input && input.provider) || "custom").trim().toLowerCase() || "custom";
+
+  const imapPort = _portOrNull(input.imap_port);
+  const smtpPort = _portOrNull(input.smtp_port);
+  if (Number.isNaN(imapPort) || Number.isNaN(smtpPort)) return { success: false, error: "Invalid port", error_code: "invalid_argument" };
+
+  const loaded = loadAuth();
+  if (!loaded.success) return loaded;
+  const auth = loaded.auth;
+
+  const lower = email.toLowerCase();
+  const wantedId = String((input && input.id) || "").trim();
+  let existingId = "";
+  for (const [id, acc] of Object.entries(auth.accounts)) {
+    const sameEmail = acc && typeof acc === "object" && String(acc.email || "").toLowerCase() === lower;
+    if (sameEmail || (wantedId && id === wantedId)) { existingId = id; break; }
+  }
+  if (existingId && !opts.force) {
+    return { success: false, error: `Account already exists: ${existingId} (${email})`, error_code: "already_exists", id: existingId };
+  }
+
+  const taken = new Set(Object.keys(auth.accounts));
+  const id = existingId || wantedId || _deriveAccountId(email, provider, taken);
+
+  const entry = { email, password, provider };
+  if (input.imap_host) {
+    entry.imap_host = String(input.imap_host).trim();
+    entry.imap_port = imapPort || 993;
+    // Port 993 is implicit TLS; anything else is STARTTLS, which the IMAP
+    // client requires (never plaintext), so false here is still encrypted.
+    entry.imap_secure = input.imap_secure != null ? Boolean(input.imap_secure) : entry.imap_port === 993;
+  } else if (imapPort) {
+    entry.imap_port = imapPort;
+  }
+  if (input.smtp_host) {
+    entry.smtp_host = String(input.smtp_host).trim();
+    entry.smtp_port = smtpPort || 465;
+    entry.smtp_secure = input.smtp_secure != null ? Boolean(input.smtp_secure) : entry.smtp_port === 465;
+  } else if (smtpPort) {
+    entry.smtp_port = smtpPort;
+    entry.smtp_secure = smtpPort === 465;
+  }
+  if (input.description) entry.description = String(input.description);
+
+  if (existingId && existingId !== id) delete auth.accounts[existingId];
+  auth.accounts[id] = entry;
+  const def = auth.default_account || auth.defaultAccount || "";
+  if (!def || !auth.accounts[def]) auth.default_account = id;
+
+  _writeJsonFile(paths.getPathConfig().authJson, auth);
+
+  const conn = resolveAccountConnectionConfig(entry);
+  return {
+    success: true,
+    replaced: Boolean(existingId),
+    is_default: auth.default_account === id,
+    account: { id, email, provider, imap_host: conn.imap.host, smtp_host: conn.smtp.host },
+  };
+}
+
 module.exports = {
+  saveAccount,
   loadAuth,
   listAccounts,
   getAccountByIdOrEmail,

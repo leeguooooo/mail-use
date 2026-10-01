@@ -33,6 +33,16 @@ const DEFAULTS = {
     smtp_port: 465,
     smtp_secure: true,
   },
+  // iCloud Mail: IMAP over implicit TLS, SMTP only on 587 with STARTTLS
+  // (Apple has no 465 listener). Needs an app-specific password.
+  icloud: {
+    imap_host: "imap.mail.me.com",
+    imap_port: 993,
+    imap_secure: true,
+    smtp_host: "smtp.mail.me.com",
+    smtp_port: 587,
+    smtp_secure: false,
+  },
   outlook: {
     imap_host: "outlook.office365.com",
     imap_port: 993,
