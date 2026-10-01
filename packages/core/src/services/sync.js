@@ -45,6 +45,12 @@ function _loadSyncState() {
   return { statePath, state: { last_sync_times: { incremental: null, full: null }, accounts: {} } };
 }
 
+function _syncCounts(state) {
+  const c = (state && state.sync_counts) || {};
+  const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : 0);
+  return { total: n(c.total), failures: n(c.failures) };
+}
+
 function status() {
   const pc = paths.getPathConfig();
   const all = accounts.getAllAccountsResolved();
@@ -284,6 +290,14 @@ async function force({ account_id = "", full = false } = {}) {
     }
   });
 
+  // Running totals of per-account sync attempts, so health() reports real
+  // numbers instead of constants. Older state files lack the key; it starts
+  // counting from the first sync after upgrade.
+  const counts = _syncCounts(state);
+  counts.total += results.length;
+  counts.failures += results.filter((r) => !r.success).length;
+  state.sync_counts = counts;
+
   state.last_sync_times = state.last_sync_times || { incremental: null, full: null };
   state.last_sync_times[full ? "full" : "incremental"] = _nowIso();
   _writeJson(statePath, state);
@@ -325,6 +339,7 @@ function health() {
   const accountsState = state.accounts || {};
   const total_accounts = Object.keys(accountsState).length;
   const healthy_accounts = Object.values(accountsState).filter((a) => a && a.sync_status === "ok").length;
+  const { total: total_syncs, failures: total_failures } = _syncCounts(state);
   return {
     success: true,
     status: healthy_accounts === total_accounts ? "healthy" : "warning",
@@ -333,9 +348,11 @@ function health() {
     warning_accounts: total_accounts - healthy_accounts,
     critical_accounts: 0,
     average_health_score: total_accounts ? (healthy_accounts / total_accounts) * 100 : 100.0,
-    total_syncs: 0,
-    total_failures: 0,
-    success_rate: 100.0,
+    // From the counters force() keeps in the state file. A file written
+    // before they existed reads as 0 syncs / 100% — what this always reported.
+    total_syncs,
+    total_failures,
+    success_rate: total_syncs ? ((total_syncs - total_failures) / total_syncs) * 100 : 100.0,
     timestamp: _nowIso(),
   };
 }
