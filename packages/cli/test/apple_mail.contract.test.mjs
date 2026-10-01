@@ -10,7 +10,12 @@ const cliBin = path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 function setup(name) {
   const root = path.join(import.meta.dirname, ".tmp", name);
   fs.rmSync(root, { recursive: true, force: true });
-  const env = { ...testEnv(root), MAILBOX_NO_DAEMON: "1" };
+  // An empty Apple Mail account list: nothing is a duplicate, and the real
+  // Mail app is never scripted from tests.
+  fs.mkdirSync(root, { recursive: true });
+  const mailJson = path.join(root, "apple_mail_accounts.json");
+  fs.writeFileSync(mailJson, "[]");
+  const env = { ...testEnv(root), MAILBOX_NO_DAEMON: "1", MAILBOX_APPLE_MAIL_ACCOUNTS_JSON: mailJson, MAILBOX_APPLE_MAIL_SETTINGS_DELAY_MS: "0" };
   writeAuthJson(env.MAILBOX_CONFIG_DIR, {
     version: 1,
     accounts: {

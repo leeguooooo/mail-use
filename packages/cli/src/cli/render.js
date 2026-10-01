@@ -60,6 +60,9 @@ function _padRight(str, width) {
 }
 
 function _truncate(str, max) {
+  // A value exactly as wide as its column fits; without this check the last
+  // character of the widest cell was always replaced by "…".
+  if (_displayWidth(str) <= max) return String(str || "");
   let out = "";
   let w = 0;
   for (const ch of String(str || "")) {
