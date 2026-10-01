@@ -134,7 +134,21 @@ function _releaseLock(lockPath) {
   try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
 }
 
+// Bumped whenever the schema below changes. Stored in the file's
+// PRAGMA user_version, so an up-to-date DB skips the ~20 CREATE IF NOT EXISTS
+// statements on every open (each CLI call and every daemon cache read opens
+// the file). A file from a newer mail-use (higher version) is left alone: we
+// only use columns that newer versions keep.
+const SCHEMA_VERSION = 1;
+
 function _ensureSchema(db) {
+  const current = Number(_execScalar(db, "PRAGMA user_version") || 0);
+  if (current >= SCHEMA_VERSION) return;
+  _createBaseSchema(db);
+  db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
+function _createBaseSchema(db) {
   // Matches Python schema in src/database/email_sync_db.py
   db.run(`
     CREATE TABLE IF NOT EXISTS accounts (
@@ -409,6 +423,39 @@ async function withWriteSession(dbPath, fn) {
           stmt.free();
         }
       },
+      // The helpers below let one operation (mark, move, a sync pass) make all
+      // its cache changes in a single session: one lock, one read of the
+      // file, one rewrite — instead of a full read+rewrite per change.
+      removeEmails({ accountId, folder, uids }) {
+        const ids = _uniqueIds(uids);
+        if (!ids.length) return 0;
+        const { where, params } = _uidScope(accountId, folder, ids);
+        h.db.run(`DELETE FROM emails WHERE ${where}`, params);
+        return h.db.getRowsModified();
+      },
+      updateFlags({ accountId, folder, uids, unread, flagged }) {
+        const ids = _uniqueIds(uids);
+        const sets = [];
+        const setParams = [];
+        if (unread !== undefined) { sets.push("is_read = ?"); setParams.push(unread ? 0 : 1); }
+        if (flagged !== undefined) { sets.push("is_flagged = ?"); setParams.push(flagged ? 1 : 0); }
+        if (!ids.length || !sets.length) return 0;
+        const { where, params } = _uidScope(accountId, folder, ids);
+        h.db.run(
+          `UPDATE emails SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE ${where}`,
+          [...setParams, ...params]
+        );
+        return h.db.getRowsModified();
+      },
+      invalidateUnread({ accountId, folder }) {
+        h.db.run(
+          "UPDATE folders SET unread_count = NULL WHERE account_id = ? AND name = ?",
+          [String(accountId), String(folder)]
+        );
+      },
+      getUids({ accountId, folder }) {
+        return _cachedUids(h.db, accountId, folder);
+      },
     };
     const result = await fn(session);
     h.flush();
@@ -645,16 +692,15 @@ async function upsertEmails({ dbPath, accountId, folderId, emails }) {
 
 async function invalidateFolderUnreadCount({ dbPath, accountId, folder }) {
   try {
-    await withWriteSession(dbPath, (s) => {
-      s.db.run(
-        "UPDATE folders SET unread_count = NULL WHERE account_id = ? AND name = ?",
-        [String(accountId), String(folder)]
-      );
-    });
+    await withWriteSession(dbPath, (s) => s.invalidateUnread({ accountId, folder }));
     return { success: true };
   } catch (e) {
     return { success: false, error: e && e.message ? e.message : "db error" };
   }
+}
+
+function _uniqueIds(uids) {
+  return [...new Set((uids || []).map((x) => String(x).trim()).filter(Boolean))];
 }
 
 // IMAP UIDs are only unique within a folder: uid 42 in INBOX and uid 42 in
@@ -674,13 +720,10 @@ function _uidScope(accountId, folder, ids) {
 }
 
 async function removeEmailsFromCache({ dbPath, accountId, folder, uids }) {
-  const ids = [...new Set((uids || []).map((x) => String(x).trim()).filter(Boolean))];
+  const ids = _uniqueIds(uids);
   if (!ids.length) return { success: true, removed: 0 };
   try {
-    const { where, params } = _uidScope(accountId, folder, ids);
-    await withWriteSession(dbPath, (s) => {
-      s.db.run(`DELETE FROM emails WHERE ${where}`, params);
-    });
+    await withWriteSession(dbPath, (s) => s.removeEmails({ accountId, folder, uids: ids }));
     return { success: true, removed: ids.length };
   } catch (e) {
     return { success: false, error: e && e.message ? e.message : "db error" };
@@ -690,83 +733,89 @@ async function removeEmailsFromCache({ dbPath, accountId, folder, uids }) {
 // `unread` / `flagged`: pass a boolean to set that column, leave undefined to
 // leave it alone.
 async function updateEmailFlags({ dbPath, accountId, folder, uids, unread, flagged }) {
-  const ids = [...new Set((uids || []).map((x) => String(x).trim()).filter(Boolean))];
+  const ids = _uniqueIds(uids);
   if (!ids.length) return { success: true, updated: 0 };
-  const sets = [];
-  const setParams = [];
-  if (unread !== undefined) { sets.push("is_read = ?"); setParams.push(unread ? 0 : 1); }
-  if (flagged !== undefined) { sets.push("is_flagged = ?"); setParams.push(flagged ? 1 : 0); }
-  if (!sets.length) return { success: true, updated: 0 };
+  if (unread === undefined && flagged === undefined) return { success: true, updated: 0 };
   try {
-    const { where, params } = _uidScope(accountId, folder, ids);
-    await withWriteSession(dbPath, (s) => {
-      s.db.run(
-        `UPDATE emails SET ${sets.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE ${where}`,
-        [...setParams, ...params]
-      );
-    });
+    await withWriteSession(dbPath, (s) => s.updateFlags({ accountId, folder, uids: ids, unread, flagged }));
     return { success: true, updated: ids.length };
   } catch (e) {
     return { success: false, error: e && e.message ? e.message : "db error" };
   }
 }
 
+function _cachedUids(db, accountId, folder) {
+  const rows = _execRows(
+    db,
+    `
+      SELECT e.uid
+      FROM emails e
+      LEFT JOIN folders f ON e.folder_id = f.id
+      WHERE e.account_id = ?
+        AND (f.name = ? COLLATE NOCASE OR (e.folder_id IS NULL AND ? = 'INBOX'))
+    `,
+    [String(accountId), String(folder || "INBOX"), String(folder || "INBOX")]
+  );
+  return rows.map((r) => String(r.uid));
+}
+
 async function getEmailUIDsFromCache({ dbPath, accountId, folder }) {
   if (!dbPath || !fs.existsSync(dbPath)) return [];
+  const h = await openSyncDb(dbPath);
+  try {
+    return _cachedUids(h.db, accountId, folder);
+  } finally {
+    try { h.close(); } catch { /* ignore */ }
+  }
+}
+
+// Reverse lookup for many uids in one DB open: Map<uid, folder> for the uids
+// the cache knows. IMAP UIDs are per-folder, so the same uid can exist in
+// several folders: prefer INBOX on a collision, then the most recently synced
+// row, so a bare-uid `show` opens the most likely-intended message
+// deterministically.
+async function lookupFoldersForUids({ dbPath, accountId, uids }) {
+  const out = new Map();
+  const ids = _uniqueIds(uids);
+  if (!dbPath || !ids.length || !fs.existsSync(dbPath)) return out;
   const h = await openSyncDb(dbPath);
   try {
     const rows = _execRows(
       h.db,
       `
-        SELECT e.uid
+        SELECT e.uid as uid, CASE WHEN e.folder_id IS NULL THEN 'INBOX' ELSE f.name END as folder
         FROM emails e
         LEFT JOIN folders f ON e.folder_id = f.id
-        WHERE e.account_id = ?
-          AND (f.name = ? COLLATE NOCASE OR (e.folder_id IS NULL AND ? = 'INBOX'))
+        WHERE e.account_id = ? AND e.uid IN (${_placeholders(ids)})
+        ORDER BY CASE WHEN (e.folder_id IS NULL OR f.name = 'INBOX') THEN 0 ELSE 1 END, e.updated_at DESC
       `,
-      [String(accountId), String(folder || "INBOX"), String(folder || "INBOX")]
+      [String(accountId || ""), ...ids]
     );
-    return rows.map((r) => String(r.uid));
+    for (const r of rows) {
+      const uid = String(r.uid);
+      if (!out.has(uid) && r.folder) out.set(uid, String(r.folder));
+    }
+    return out;
+  } catch {
+    return out;
   } finally {
     try { h.close(); } catch { /* ignore */ }
   }
 }
 
-// Reverse lookup: which folder does this (account, uid) live in, per the cache.
-// Returns the folder name or "" when unknown. Used to make `show` folder-aware
-// without the caller having to remember each email's folder.
+// Which folder does this (account, uid) live in, per the cache. Returns the
+// folder name or "" when unknown.
 async function lookupFolderForUid({ dbPath, accountId, uid }) {
-  if (!dbPath || !fs.existsSync(dbPath)) return "";
   const u = String(uid || "").trim();
   if (!u) return "";
-  const h = await openSyncDb(dbPath);
-  try {
-    const row = _execRows(
-      h.db,
-      // IMAP UIDs are per-folder, so the same uid can exist in several folders.
-      // Prefer INBOX on a collision, then the most recently synced row, so a
-      // bare-uid `show` opens the most likely-intended message deterministically.
-      `
-        SELECT CASE WHEN e.folder_id IS NULL THEN 'INBOX' ELSE f.name END as folder
-        FROM emails e
-        LEFT JOIN folders f ON e.folder_id = f.id
-        WHERE e.account_id = ? AND e.uid = ?
-        ORDER BY CASE WHEN (e.folder_id IS NULL OR f.name = 'INBOX') THEN 0 ELSE 1 END, e.updated_at DESC
-        LIMIT 1
-      `,
-      [String(accountId || ""), u]
-    )[0];
-    return row && row.folder ? String(row.folder) : "";
-  } catch {
-    return "";
-  } finally {
-    try { h.close(); } catch { /* ignore */ }
-  }
+  const m = await lookupFoldersForUids({ dbPath, accountId, uids: [u] });
+  return m.get(u) || "";
 }
 
 module.exports = {
   listEmailsFromCache,
   lookupFolderForUid,
+  lookupFoldersForUids,
   upsertAccount,
   upsertFolder,
   upsertEmails,
@@ -779,4 +828,5 @@ module.exports = {
   _acquireLock,
   _releaseLock,
   _lockIsStale,
+  SCHEMA_VERSION,
 };

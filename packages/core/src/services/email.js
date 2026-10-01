@@ -866,27 +866,10 @@ async function showEmails({
   const acc = accounts.getAccountByIdOrEmail(account_id);
   if (!acc.success) return acc;
 
+  const opts = { body_max_len, html_max_len, include_html, strip_urls };
   const openFolder = _normalizeFolder(folder);
   return withImapClient(acc.account, async (client) => {
-    await client.mailboxOpen(openFolder);
-    const emails = [];
-    const failed_ids = [];
-    const { valid, invalid } = _parseUidList(ids);
-    for (const id of invalid) failed_ids.push({ id, error: "not_found" });
-    // Two FETCHes for the whole set (metadata+size, then sources), not one
-    // FETCH per uid.
-    for await (const r of _fetchFullMessages(client, valid)) {
-      if (r.error) {
-        failed_ids.push({ id: String(r.uid), error: r.error });
-        continue;
-      }
-      try {
-        const parsed = await _safeParse(r.msg.source);
-        emails.push(_messageFields(acc.account, openFolder, r.msg, parsed, { body_max_len, html_max_len, include_html, strip_urls }));
-      } catch (e) {
-        failed_ids.push({ id: String(r.uid), error: e && e.message ? e.message : "fetch failed" });
-      }
-    }
+    const { emails, failed_ids } = await _showFromFolder(client, acc.account, openFolder, ids, opts);
     return {
       success: failed_ids.length === 0,
       emails,
@@ -899,6 +882,51 @@ async function showEmails({
   }, { idempotent: true });
 }
 
+// Fetch `ids` from one folder on an already-connected client.
+async function _showFromFolder(client, account, openFolder, ids, opts) {
+  await client.mailboxOpen(openFolder);
+  const emails = [];
+  const failed_ids = [];
+  const { valid, invalid } = _parseUidList(ids);
+  for (const id of invalid) failed_ids.push({ id, error: "not_found" });
+  // Two FETCHes for the whole set (metadata+size, then sources), not one
+  // FETCH per uid.
+  for await (const r of _fetchFullMessages(client, valid)) {
+    if (r.error) {
+      failed_ids.push({ id: String(r.uid), error: r.error });
+      continue;
+    }
+    try {
+      const parsed = await _safeParse(r.msg.source);
+      emails.push(_messageFields(account, openFolder, r.msg, parsed, opts));
+    } catch (e) {
+      failed_ids.push({ id: String(r.uid), error: e && e.message ? e.message : "fetch failed" });
+    }
+  }
+  return { emails, failed_ids };
+}
+
+function _syncDbPath() {
+  try {
+    return paths.getPathConfig().emailSyncDb;
+  } catch {
+    return "";
+  }
+}
+
+// Best-effort cache update: all of one operation's changes go through a
+// single write session (one lock, one read and one rewrite of the DB file).
+// A cache failure never fails the IMAP operation that already happened.
+async function _cacheWrite(fn) {
+  const dbPath = _syncDbPath();
+  if (!dbPath) return;
+  try {
+    await syncDb.withWriteSession(dbPath, fn);
+  } catch (e) {
+    if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: cache update failed: ${(e && e.message) || e}\n`);
+  }
+}
+
 // Resolve which folder an email lives in: an explicit folder wins, otherwise the
 // local cache is consulted, otherwise INBOX. Lets `show` open the right mailbox
 // without the caller remembering each email's folder.
@@ -906,15 +934,10 @@ async function resolveEmailFolder({ account_id = "", uid = "", folder = "" } = {
   if (folder) return _normalizeFolder(folder);
   const acc = accounts.getAccountByIdOrEmail(account_id);
   const accId = acc && acc.success ? acc.account.id : account_id;
-  let dbPath = "";
-  try {
-    dbPath = paths.getPathConfig().emailSyncDb;
-  } catch {
-    dbPath = "";
-  }
+  const dbPath = _syncDbPath();
   if (dbPath && uid) {
     try {
-      const f = await require("../storage/sync_db").lookupFolderForUid({ dbPath, accountId: accId, uid: String(uid) });
+      const f = await syncDb.lookupFolderForUid({ dbPath, accountId: accId, uid: String(uid) });
       if (f) return f;
     } catch {
       /* ignore */
@@ -925,9 +948,9 @@ async function resolveEmailFolder({ account_id = "", uid = "", folder = "" } = {
 
 // Folder-aware batch show. refs: [{ id, folder }]. A ref's folder may come from a
 // 3-part gid; when absent it is resolved from the local cache, then falls back to
-// INBOX. Ids are grouped by folder and each folder is fetched via showEmails, so
-// `show` works on results that span folders (e.g. after `search --folder all`)
-// without the caller passing --folder per email.
+// INBOX. Ids are grouped by folder and fetched folder by folder over one IMAP
+// connection, so `show` works on results that span folders (e.g. after
+// `search --folder all`) without the caller passing --folder per email.
 async function showEmailsResolved({ refs = [], account_id = "", ...opts } = {}) {
   const list = (Array.isArray(refs) ? refs : [])
     .map((r) => ({ id: String((r && r.id) || "").trim(), folder: (r && r.folder) || "" }))
@@ -938,35 +961,56 @@ async function showEmailsResolved({ refs = [], account_id = "", ...opts } = {}) 
   if (!acc.success) return acc;
 
   // Resolve a folder for every ref (gid folder -> cache -> INBOX), then group.
+  // Refs without a folder are looked up in one DB open, not one per ref (each
+  // of which also re-read auth.json and the config).
+  const unresolved = list.filter((r) => !r.folder).map((r) => r.id);
+  let cached = new Map();
+  const dbPath = _syncDbPath();
+  if (unresolved.length && dbPath) {
+    try {
+      cached = await syncDb.lookupFoldersForUids({ dbPath, accountId: acc.account.id, uids: unresolved });
+    } catch {
+      cached = new Map();
+    }
+  }
   const byFolder = new Map();
   for (const r of list) {
-    const folder = await resolveEmailFolder({ account_id: acc.account.id, uid: r.id, folder: r.folder });
+    const folder = r.folder ? _normalizeFolder(r.folder) : (cached.get(r.id) || "INBOX");
     if (!byFolder.has(folder)) byFolder.set(folder, []);
     byFolder.get(folder).push(r.id);
   }
 
+  const showOpts = {
+    body_max_len: opts.body_max_len || 0,
+    html_max_len: opts.html_max_len || 0,
+    include_html: opts.include_html === undefined ? true : opts.include_html,
+    strip_urls: Boolean(opts.strip_urls),
+  };
   const emails = [];
   const failed_ids = [];
-  for (const [folder, ids] of byFolder) {
-    let res;
-    try {
-      res = await showEmails({ email_ids: ids, folder, account_id, ...opts });
-    } catch (e) {
-      // A folder that can't be opened (stale/renamed/deleted) must not sink the
-      // whole batch — degrade that group to failed_ids and keep other folders.
-      const msg = e && e.message ? e.message : "fetch failed";
-      for (const id of ids) failed_ids.push({ id, error: msg, folder });
-      continue;
-    }
-    if (res && res.success === false && !Array.isArray(res.emails)) {
-      // Soft per-group error (e.g. mailboxOpen returned an error object): record
-      // it for this group's ids rather than aborting the whole resolve.
-      const msg = res.error || "fetch failed";
-      for (const id of ids) failed_ids.push({ id, error: msg, folder });
-      continue;
-    }
-    if (res && Array.isArray(res.emails)) emails.push(...res.emails);
-    if (res && Array.isArray(res.failed_ids)) failed_ids.push(...res.failed_ids);
+  const fail = (ids, e, folder) => {
+    const msg = (e && e.message) || "fetch failed";
+    for (const id of ids) failed_ids.push({ id, error: msg, folder });
+  };
+  try {
+    await withImapClient(acc.account, async (client) => {
+      for (const [folder, ids] of byFolder) {
+        try {
+          const res = await _showFromFolder(client, acc.account, folder, ids, showOpts);
+          emails.push(...res.emails);
+          failed_ids.push(...res.failed_ids);
+        } catch (e) {
+          // A folder that can't be opened (stale/renamed/deleted) must not
+          // sink the whole batch — degrade that group to failed_ids and keep
+          // the other folders.
+          fail(ids, e, folder);
+        }
+      }
+    }, { idempotent: true });
+  } catch (e) {
+    // Connection-level failure: every group not yet reported fails with it.
+    const reported = new Set([...emails.map((x) => x.id), ...failed_ids.map((x) => String(x.id))]);
+    for (const [folder, ids] of byFolder) fail(ids.filter((id) => !reported.has(String(id))), e, folder);
   }
 
   return {
@@ -1017,18 +1061,9 @@ async function markEmails({ email_ids, mark_as, folder = "INBOX", account_id = "
     const marked = results.filter((r) => r.success).length;
     if (marked > 0) {
       const successfulUids = results.filter((r) => r.success).map((r) => r.email_id);
-      const dbPath = paths.getPathConfig().emailSyncDb;
-      await syncDb.updateEmailFlags({
-        dbPath,
-        accountId: acc.account.id,
-        folder: openFolder,
-        uids: successfulUids,
-        unread: markAs === "unread",
-      });
-      await syncDb.invalidateFolderUnreadCount({
-        dbPath,
-        accountId: acc.account.id,
-        folder: openFolder,
+      await _cacheWrite((s) => {
+        s.updateFlags({ accountId: acc.account.id, folder: openFolder, uids: successfulUids, unread: markAs === "unread" });
+        s.invalidateUnread({ accountId: acc.account.id, folder: openFolder });
       });
     }
     return {
@@ -1129,12 +1164,8 @@ async function deleteEmails({ email_ids, folder = "INBOX", permanent = false, tr
     if (deleted > 0) {
       // UIDs are per-folder: scope the removal to the folder we deleted from,
       // or the same uid in another folder vanishes from the cache too.
-      await syncDb.removeEmailsFromCache({
-        dbPath: paths.getPathConfig().emailSyncDb,
-        accountId: acc.account.id,
-        folder: openFolder,
-        uids: results.filter((r) => r.success).map((r) => r.email_id),
-      });
+      const removed = results.filter((r) => r.success).map((r) => r.email_id);
+      await _cacheWrite((s) => s.removeEmails({ accountId: acc.account.id, folder: openFolder, uids: removed }));
     }
     return {
       success: deleted === results.length,
@@ -1489,17 +1520,15 @@ async function flagEmail({ email_id, set_flag, flag_type = "flagged", folder = "
     // Keep the cache in step with the server for the flags it mirrors, so a
     // cached list right after `flag --type read` doesn't contradict it.
     if (flag === "\\Seen" || flag === "\\Flagged") {
-      const dbPath = paths.getPathConfig().emailSyncDb;
-      await syncDb.updateEmailFlags({
-        dbPath,
-        accountId: acc.account.id,
-        folder: openFolder,
-        uids: [String(uid)],
-        ...(flag === "\\Seen" ? { unread: !set } : { flagged: set }),
+      await _cacheWrite((s) => {
+        s.updateFlags({
+          accountId: acc.account.id,
+          folder: openFolder,
+          uids: [String(uid)],
+          ...(flag === "\\Seen" ? { unread: !set } : { flagged: set }),
+        });
+        if (flag === "\\Seen") s.invalidateUnread({ accountId: acc.account.id, folder: openFolder });
       });
-      if (flag === "\\Seen") {
-        await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: openFolder });
-      }
     }
     return {
       success: true,
@@ -1557,10 +1586,11 @@ async function moveEmails({ email_ids, target_folder, source_folder = "INBOX", a
       // folder (the target assigns new ones). Drop them from the cache so a
       // cached list doesn't keep showing them where they were, and invalidate
       // both folders' unread snapshots — unread mail changed sides.
-      const dbPath = paths.getPathConfig().emailSyncDb;
-      await syncDb.removeEmailsFromCache({ dbPath, accountId: acc.account.id, folder: src, uids: moved_ids });
-      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: src });
-      await syncDb.invalidateFolderUnreadCount({ dbPath, accountId: acc.account.id, folder: tgt });
+      await _cacheWrite((s) => {
+        s.removeEmails({ accountId: acc.account.id, folder: src, uids: moved_ids });
+        s.invalidateUnread({ accountId: acc.account.id, folder: src });
+        s.invalidateUnread({ accountId: acc.account.id, folder: tgt });
+      });
     }
     return {
       success: failed_ids.length === 0,
