@@ -11,7 +11,7 @@ const {
   _uidsSortedDesc, _compareDatesDesc, _mapLimit, ACCOUNT_CONCURRENCY,
 } = require("./internals");
 const { _envelopeItem } = require("./items");
-const { PREVIEW_SOURCE_QUERY, _previewFromSource } = require("./message_source");
+const { PREVIEW_SOURCE_QUERY, _applyPreview } = require("./message_source");
 
 // Freshness window for cache-served list/recent. When a cached read comes back
 // with fewer rows than requested AND its newest sync is older than this many
@@ -102,7 +102,7 @@ async function _fetchEmailsForAccount({ account, folder, limit, offset, unreadOn
       { uid: true }
     )) {
       const item = _envelopeItem(account, openFolder, msg, "imap_fetch");
-      if (wantPreview && msg.source) Object.assign(item, await _previewFromSource(msg.source, previewChars));
+      if (wantPreview) await _applyPreview(item, msg, previewChars);
       emails.push(item);
     }
 

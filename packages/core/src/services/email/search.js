@@ -9,7 +9,7 @@ const {
   _normalizeFolder, _gid, _listMailboxes, _selectableFoldersFor,
   _uidsSortedDesc, _compareDatesDesc, _mapLimit, ACCOUNT_CONCURRENCY,
 } = require("./internals");
-const { PREVIEW_SOURCE_QUERY, _previewFromSource } = require("./message_source");
+const { PREVIEW_SOURCE_QUERY, _applyPreview } = require("./message_source");
 
 async function searchEmails({ query, from = "", subject = "", account_id = "", date_from = "", date_to = "", limit = 50, offset = 0, unread_only = false, folder = "all", preview_chars = 0, timeout_ms = 0 } = {}) {
   const previewChars = Math.max(0, Number(preview_chars || 0));
@@ -207,7 +207,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
             folder: folderPath,
             preview: "",
           };
-          if (wantPreview && msg.source) Object.assign(item, await _previewFromSource(msg.source, previewChars));
+          if (wantPreview) await _applyPreview(item, msg, previewChars);
           emails.push(item);
         }
       }

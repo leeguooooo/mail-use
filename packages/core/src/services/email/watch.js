@@ -1,8 +1,10 @@
 // IMAP IDLE watcher: a long-lived, unpooled connection that reports new mail.
 
 const accounts = require("../accounts");
-const { formatDateTime, firstAddress, hasAttachmentsFromBodyStructure } = require("../format");
-const { _normalizeFolder, _gid } = require("./internals");
+const { createImapClient } = require("../imap_client");
+const { firstAddress } = require("../format");
+const { _normalizeFolder } = require("./internals");
+const { _envelopeItem } = require("./items");
 
 // Watch a folder for new mail using IMAP IDLE. Long-running. Calls
 // onEvent({type, email}) for every newly-arriving message that matches
@@ -31,28 +33,17 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
     return true;
   };
 
-  const { ImapFlow } = require("imapflow");
-  const port = Number(acc.account.imap.port);
-  const secure = Boolean(acc.account.imap.secure);
-  const client = new ImapFlow({
-    host: acc.account.imap.host,
-    port,
-    secure,
-    requireTLS: !secure,
-    auth: { user: acc.account.email, pass: acc.account.password },
-    tls: { rejectUnauthorized: !(String(process.env.MAILBOX_ALLOW_INSECURE_TLS || "").trim() === "1"), minVersion: "TLSv1.2" },
-    logger: false,
+  // An unhandled 'error' event would crash the process. The 'close' handler
+  // below is what reports the disconnect; this only keeps the error handled.
+  const client = createImapClient(acc.account, {
+    onError: (err) => {
+      if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: watch connection error for ${acc.account.email}: ${(err && err.message) || err}\n`);
+    },
   });
 
   let stopped = false;
   let resolveDone;
   const done = new Promise((r) => { resolveDone = r; });
-
-  // An unhandled 'error' event would crash the process. The 'close' handler
-  // below is what reports the disconnect; this only keeps the error handled.
-  client.on("error", (err) => {
-    if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: watch connection error for ${acc.account.email}: ${(err && err.message) || err}\n`);
-  });
 
   try {
     await client.connect();
@@ -103,22 +94,7 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
               for (const u of oldest) seenUids.delete(u);
             }
             if (!matches(env)) continue;
-            const flags = msg.flags || new Set([]);
-            const item = {
-              id: String(uidNum),
-              uid: String(uidNum),
-              gid: _gid(acc.account.id, openFolder, uidNum),
-              message_id: env.messageId || "",
-              subject: env.subject || "",
-              from: firstAddress(env.from),
-              date: formatDateTime(msg.internalDate || env.date),
-              unread: !flags.has("\\Seen"),
-              has_attachments: hasAttachmentsFromBodyStructure(msg.bodyStructure),
-              account: acc.account.email,
-              account_id: acc.account.id,
-              folder: openFolder,
-              source: "imap_idle",
-            };
+            const item = _envelopeItem(acc.account, openFolder, { ...msg, uid: uidNum }, "imap_idle");
             if (typeof onEvent === "function") {
               try { onEvent({ type: "new_email", email: item }); } catch { /* ignore */ }
             }

@@ -3,7 +3,6 @@
 
 const accounts = require("../accounts");
 const { withImapClient } = require("../imap");
-const { _isTestMode } = require("../env");
 const { formatDateTime, firstAddress, attachmentFlags } = require("../format");
 const syncDb = require("../../storage/sync_db");
 const { _normalizeFolder, _gid } = require("./internals");
@@ -71,53 +70,6 @@ async function showEmail({
   const openFolder = _normalizeFolder(folder);
   return withImapClient(acc.account, async (client) => {
     await client.mailboxOpen(openFolder);
-    if (_isTestMode()) {
-      const { getMailbox } = require("../../testing/mock_store");
-      const mb = getMailbox(acc.account.id, openFolder);
-      const raw = mb && mb.messages ? mb.messages.find((m) => String(m.uid) === String(id)) : null;
-      if (!raw) return { success: false, error: `Email not found: ${id}` };
-      const attachments = (raw.attachments || []).map((a) => ({
-        filename: a.filename,
-        size: a.content ? a.content.length : 0,
-        content_type: a.contentType || "application/octet-stream",
-        ...attachmentFlags(a),
-      }));
-      const unread = !(raw.flags || new Set([])).has("\\Seen");
-      const composed = _composeBody({
-        text: raw.body,
-        html: raw.html,
-        body_max_len,
-        html_max_len,
-        include_html,
-        strip_urls,
-      });
-      return {
-        success: true,
-        id: String(raw.uid),
-        gid: _gid(acc.account.id, openFolder, raw.uid),
-        requested_id: String(id),
-        from: raw.from,
-        to: raw.to,
-        cc: raw.cc || "",
-        subject: raw.subject,
-        date: raw.date,
-        ...composed,
-        has_html: Boolean(raw.html),
-        attachments,
-        attachment_count: attachments.length,
-        real_attachment_count: attachments.filter((x) => x.is_real_attachment).length,
-        has_attachments: attachments.some((x) => x.is_real_attachment),
-        unread,
-        message_id: raw.messageId || "",
-        in_reply_to: raw.inReplyTo || "",
-        references: raw.references || "",
-        folder: openFolder,
-        account: acc.account.email,
-        account_id: acc.account.id,
-        from_cache: false,
-      };
-    }
-
     // Size is checked before the source is downloaded (see _fetchFullMessages).
     const loaded = await _loadParsedMessage(client, id, id);
     if (!loaded.success) return loaded;
