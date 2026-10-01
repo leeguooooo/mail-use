@@ -17,7 +17,6 @@ function firstAddress(list) {
     if (!item) continue;
     if (typeof item === "string") return item;
     if (item.address) return item.address;
-    if (item.name && item.address) return `${item.name} <${item.address}>`;
   }
   return "";
 }

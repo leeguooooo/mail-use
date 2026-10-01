@@ -12,18 +12,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["20", "22"]
+        # 22 = engines floor (>=22.12; Node 20 went EOL 2026-04-30);
+        # 24 = the Node embedded in the release binary (SHIPPED_NODE in
+        # release-binaries.yml).
+        node-version: ["22", "24"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
       - uses: pnpm/action-setup@v4
         with:
           version: "10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

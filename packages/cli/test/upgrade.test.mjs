@@ -43,15 +43,16 @@ describe("compareVersions", () => {
 });
 
 describe("assetTarget", () => {
-  it("maps the three released platforms", () => {
+  it("maps the released platforms", () => {
     expect(upgrade.assetTarget("darwin", "arm64")).toBe("darwin-arm64");
     expect(upgrade.assetTarget("darwin", "x64")).toBe("darwin-x64");
     expect(upgrade.assetTarget("linux", "x64")).toBe("linux-x64-gnu");
+    expect(upgrade.assetTarget("linux", "arm64")).toBe("linux-arm64-gnu");
   });
 
   it("returns null on platforms with no release asset", () => {
     expect(upgrade.assetTarget("win32", "x64")).toBeNull();
-    expect(upgrade.assetTarget("linux", "arm64")).toBeNull();
+    expect(upgrade.assetTarget("linux", "ia32")).toBeNull();
   });
 
   // install.sh and the upgrade path must agree on asset names, or `upgrade`
@@ -64,6 +65,23 @@ describe("assetTarget", () => {
     // ${target} below is shell interpolation inside install.sh, not JS.
     // eslint-disable-next-line no-template-curly-in-string
     expect(sh).toContain('asset="mail-use-${target}.tar.gz"');
+  });
+});
+
+describe("isPackagedBinary", () => {
+  const { isPackagedBinary } = require("../src/packaged.js");
+
+  it("is false under plain node (not a SEA, no process.pkg)", () => {
+    expect(isPackagedBinary()).toBe(false);
+  });
+
+  it("still recognises a pkg-built binary from before the SEA switch", () => {
+    process.pkg = {};
+    try {
+      expect(isPackagedBinary()).toBe(true);
+    } finally {
+      delete process.pkg;
+    }
   });
 });
 
@@ -101,16 +119,19 @@ describe("upgrade daemon reporting", () => {
     expect(src).not.toMatch(/daemon = "not_running"/);
   });
 
-  it("confirms the daemon came back instead of trusting the reload's return value", async () => {
+  it("restarts through restartDaemon (pid-change verified), not by reinstalling the unit", async () => {
     const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
-    expect(src).toMatch(/waitForDaemon/);
-    // A reload that unloads but never loads must not read as success.
-    expect(src).toMatch(/did not come back after reload/);
+    expect(src).toMatch(/restartDaemon/);
+    // installAutostart rewrote the unit with the default interval and, on macOS,
+    // installed a LaunchAgent for daemons the user had started by hand.
+    expect(src).not.toMatch(/installAutostart/);
   });
 
   // A pkg binary cannot usefully spawn itself: pkg puts PKG_EXECPATH in the
   // environment, the child inherits it and stops behaving like the CLI. That is
   // why `was_running` was false on a machine where the daemon was plainly up.
+  // (The downloaded binary *is* run once, as a smoke test, with PKG_* stripped —
+  // that goes through verifyBinary's injectable exec, covered below.)
   it("never spawns its own binary — probes the socket and reloads in-process", () => {
     const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
     expect(src).not.toMatch(/execFileSync\(\s*dest/);

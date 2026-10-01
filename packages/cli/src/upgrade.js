@@ -13,9 +13,9 @@ const crypto = require("crypto");
 const fs = require("fs");
 const https = require("https");
 const os = require("os");
-const net = require("net");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { isPackagedBinary } = require("./packaged");
 
 const REPO = process.env.MAILBOX_UPGRADE_REPO || "leeguooooo/mail-use";
 
@@ -25,6 +25,7 @@ function assetTarget(platform = process.platform, arch = process.arch) {
   if (platform === "darwin" && (arch === "arm64" || arch === "aarch64")) return "darwin-arm64";
   if (platform === "darwin" && arch === "x64") return "darwin-x64";
   if (platform === "linux" && arch === "x64") return "linux-x64-gnu";
+  if (platform === "linux" && arch === "arm64") return "linux-arm64-gnu";
   return null;
 }
 
@@ -142,11 +143,10 @@ async function checkForUpdate(currentVersion, { fetchLatest = latestRelease, tim
   };
 }
 
-// Where the running executable lives. In a pkg binary process.execPath IS the
-// binary; in a dev checkout it's node, and self-replacing would clobber node.
+// Where the running executable lives. In the release binary process.execPath IS
+// the binary; in a dev checkout it's node, and self-replacing would clobber node.
 function resolveInstalledBinary() {
-  const packaged = typeof process.pkg !== "undefined";
-  if (!packaged) return { path: "", packaged: false };
+  if (!isPackagedBinary()) return { path: "", packaged: false };
   return { path: process.execPath, packaged: true };
 }
 
@@ -170,7 +170,7 @@ function _gitRootAbove(dir) {
 
 // How this copy of mail-use was installed, and so who may replace it.
 //
-//   release  the pkg binary from a GitHub Release (install.sh / `upgrade`) —
+//   release  the release binary from a GitHub Release (install.sh / `upgrade`) —
 //            the only channel `upgrade` rewrites
 //   brew     a binary under a Homebrew Cellar/prefix: brew owns that file
 //   npm      the JS entry run by node from a node_modules tree (npm -g, npx)
@@ -181,7 +181,7 @@ function _gitRootAbove(dir) {
 // upgrade that overwrote a brew- or npm-owned file would be undone (or worse,
 // half-undone) by that manager's next run.
 function detectInstallChannel({
-  packaged = typeof process.pkg !== "undefined",
+  packaged = isPackagedBinary(),
   execPath = process.execPath,
   entry = process.argv[1] || "",
 } = {}) {
@@ -218,9 +218,11 @@ function detectInstallChannel({
   };
 }
 
-// Environment for running a downloaded pkg binary from inside this pkg binary.
-// pkg marks its own process with PKG_* variables; a child that inherits them
-// stops acting as the CLI (it treats argv as a script to run), so they go.
+// Environment for running a downloaded binary from inside this one.
+// Historical: pkg-built binaries (before the Node SEA switch) mark their process
+// with PKG_* variables, and a child that inherits them stops acting as the CLI
+// (it treats argv as a script to run). The running binary may still be one of
+// those, so they keep being stripped.
 function childEnv(env = process.env) {
   const out = {};
   for (const [k, v] of Object.entries(env)) {
@@ -258,36 +260,26 @@ function verifyBinary(file, wantTag) {
 // Does a daemon answer right now?
 //
 // This connects to the daemon's Unix socket directly instead of shelling out to
-// `<binary> daemon status`. Spawning ourselves does not work from a pkg binary:
-// pkg puts PKG_EXECPATH into the environment, the child inherits it and stops
-// behaving like the CLI, so the probe always failed and every upgrade reported
-// the daemon as not running. Seen live on 3.3.1 — the daemon was demonstrably up
-// (pid 79961) and `was_running` still came back false.
+// `<binary> daemon status`. Historical: spawning ourselves did not work from
+// the old pkg binary — pkg put PKG_EXECPATH into the environment, the child
+// inherited it and stopped behaving like the CLI, so the probe always failed.
+// Seen live on 3.3.1 — the daemon was demonstrably up (pid 79961) and
+// `was_running` still came back false. A socket connect is cheaper anyway.
 function daemonResponds() {
-  const { getSocketPath } = require("./daemon");
-  const sockPath = getSocketPath();
-  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    const c = net.createConnection(sockPath);
-    // A successful connect is enough: only a live daemon binds this path, and a
-    // stale socket file refuses the connection.
-    c.once("connect", () => { try { c.end(); } catch { /* ignore */ } done(true); });
-    c.once("error", () => done(false));
-    setTimeout(() => { try { c.destroy(); } catch { /* ignore */ } done(false); }, 1000);
-  });
+  return require("./daemon_admin").socketAccepts({ timeoutMs: 1000 });
 }
 
-// launchd/systemd reload is asynchronous, so a probe fired immediately after the
-// reload can land in the gap between unload and load.
-async function waitForDaemon(timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await daemonResponds()) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((r) => { setTimeout(r, 500); });
-  }
+// Release tags are vX.Y.Z (optionally -prerelease). Anything else would be
+// spliced into a download URL, so it is rejected before any request is made.
+const TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+function isValidTag(tag) {
+  return TAG_RE.test(String(tag || ""));
+}
+
+function normalizeTag(tag) {
+  const t = String(tag || "").trim();
+  return t.startsWith("v") ? t : `v${t}`;
 }
 
 function sha256(buf) {
@@ -298,17 +290,25 @@ function sha256(buf) {
 // rename leaves the installed binary exactly as it was.
 //
 // `deps` exists for tests: the http getter, the install channel, the binary
-// check and the daemon probe can be swapped so the whole path runs offline
-// against a temp directory.
-async function performUpgrade({ currentVersion, targetTag = "", log = () => {}, deps = {} } = {}) {
+// check, the daemon probe and the daemon restart can be swapped so the whole
+// path runs offline against a temp directory.
+//
+// `insecure` lets a release with no published checksum through (with a
+// warning). It never lets a checksum *mismatch* through.
+async function performUpgrade({ currentVersion, targetTag = "", insecure = false, log = () => {}, deps = {} } = {}) {
   const get = deps.get || _get;
   const channel = deps.channel || detectInstallChannel();
   const verify = deps.verifyBinary || verifyBinary;
   const probeDaemon = deps.daemonResponds || daemonResponds;
+  const restart = deps.restartDaemon || ((opts) => require("./daemon").restartDaemon(opts));
   const target = deps.target !== undefined ? deps.target : assetTarget();
   if (!target) {
     return { success: false, error: `unsupported platform: ${process.platform} ${process.arch}`, error_code: "invalid_argument" };
   }
+  if (targetTag && !isValidTag(targetTag)) {
+    return { success: false, error: `Invalid tag "${targetTag}" (expected vX.Y.Z)`, error_code: "invalid_argument" };
+  }
+  if (targetTag) targetTag = normalizeTag(targetTag);
   if (!channel.upgradable) {
     // Refused, not failed: nothing was downloaded or touched, and the manager
     // that owns this install has its own command.
@@ -327,6 +327,9 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {}, 
   if (!targetTag && compareVersions(info.tag, currentVersion) <= 0) {
     return { success: true, upgraded: false, current: currentVersion, latest: info.tag, message: "already up to date", install_channel: channel };
   }
+  if (!isValidTag(info.tag)) {
+    return { success: false, error: `latest release has an unexpected tag "${info.tag}"`, error_code: "operation_failed" };
+  }
 
   const base = `https://github.com/${REPO}/releases/download/${info.tag}`;
   const assetName = `mail-use-${target}.tar.gz`;
@@ -334,30 +337,38 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {}, 
   const tarball = await get(`${base}/${assetName}`, { binary: true });
 
   // The published checksum is required. A release without one, or bytes that
-  // do not match it, are refused rather than installed.
+  // do not match it, are refused rather than installed. --insecure only waives
+  // the "no checksum published" case.
   let sums;
+  let checksumState = "verified";
   try {
     sums = await get(`${base}/${assetName}.sha256`);
   } catch (e) {
-    return {
-      success: false,
-      error: `no checksum for ${assetName} (${(e && e.message) || e}); refusing to install unverified bytes`,
-      error_code: "operation_failed",
-    };
+    if (!insecure) {
+      return {
+        success: false,
+        error: `no checksum for ${assetName} (${(e && e.message) || e}); refusing to install unverified bytes (override with --insecure)`,
+        error_code: "operation_failed",
+      };
+    }
+    checksumState = "missing";
+    log("WARNING: no checksum published; installing unverified bytes (--insecure)");
   }
-  const expected = String(sums || "").trim().split(/\s+/)[0].toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(expected)) {
-    return { success: false, error: `invalid checksum file for ${assetName}`, error_code: "operation_failed" };
+  if (checksumState === "verified") {
+    const expected = String(sums || "").trim().split(/\s+/)[0].toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(expected)) {
+      return { success: false, error: `invalid checksum file for ${assetName}`, error_code: "operation_failed" };
+    }
+    const actual = sha256(tarball);
+    if (expected !== actual) {
+      return {
+        success: false,
+        error: `checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`,
+        error_code: "operation_failed",
+      };
+    }
+    log("checksum ok");
   }
-  const actual = sha256(tarball);
-  if (expected !== actual) {
-    return {
-      success: false,
-      error: `checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`,
-      error_code: "operation_failed",
-    };
-  }
-  log("checksum ok");
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mail-use-upgrade-"));
   const dest = channel.path;
@@ -407,24 +418,28 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {}, 
     // try meant any failure — including a probe that raced the restart — came back
     // as "not_running", which told the user the daemon was down when it was up and
     // that nothing was restarted when it had been.
-    const daemon = { was_running: false, restarted: false, error: null };
+    //
+    // restartDaemon goes through launchd/systemd when they own the daemon
+    // (kickstart -k / systemctl restart) and judges success by the pid
+    // changing — a restart that leaves the old process answering has not
+    // happened. A hand-started daemon is stopped and reported as such rather
+    // than having a LaunchAgent installed behind the user's back (which is
+    // what re-running the unit install used to do, along with resetting a custom
+    // --sync-interval to 300). In-process: it only shells out to
+    // launchctl/systemctl, never to the binary we just replaced.
+    const daemon = { was_running: false, restarted: false, method: "", old_pid: null, new_pid: null, error: null };
     daemon.was_running = await probeDaemon();
     if (daemon.was_running) {
       try {
-        // In-process, for the same reason the probe is: this must not spawn the
-        // binary we just replaced. installAutostart only shells out to
-        // launchctl/systemctl, which is fine.
-        const { installAutostart } = require("./daemon");
-        const r = await installAutostart({});
-        if (r && r.success === false) daemon.error = r.error || "reload failed";
-        // Confirm it actually came back rather than trusting the return value: a
-        // reload that unloads but fails to load would otherwise read as success.
-        daemon.restarted = await waitForDaemon(10_000);
-        if (!daemon.restarted && !daemon.error) daemon.error = "daemon did not come back after reload";
+        const r = (await restart({})) || {};
+        daemon.restarted = Boolean(r.restarted);
+        daemon.method = r.method || "";
+        daemon.old_pid = r.old_pid != null ? r.old_pid : null;
+        daemon.new_pid = r.new_pid != null ? r.new_pid : null;
+        if (!r.success) daemon.error = r.error || "restart failed";
+        if (r.hint) daemon.hint = r.hint;
       } catch (e) {
         daemon.error = (e && e.message) || String(e);
-        // It may still have restarted despite the throw; report what is true.
-        daemon.restarted = await waitForDaemon(5_000);
       }
     }
 
@@ -434,7 +449,7 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {}, 
       from: String(currentVersion || ""),
       to: info.tag,
       binary: dest,
-      checksum: "verified",
+      checksum: checksumState,
       install_channel: channel,
       daemon,
       release_url: info.url,
@@ -453,6 +468,8 @@ module.exports = {
   compareVersions,
   checkForUpdate,
   detectInstallChannel,
+  isValidTag,
+  normalizeTag,
   latestRelease,
   performUpgrade,
   resolveInstalledBinary,

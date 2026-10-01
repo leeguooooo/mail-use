@@ -11,6 +11,8 @@ const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio
 const { z } = require("zod");
 const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
+const { getCliVersion } = require("./cli_version");
+const { resolveEmailRefs, resolveFolderGroups, mutateByFolder } = require("./cli/targets");
 
 const { accounts, email, sync, digest, inbox, cleanup } = makeProxies();
 
@@ -37,7 +39,7 @@ function _toolResult(result, leanByDefault = true) {
 function buildServer() {
   const server = new McpServer({
     name: "mail-use",
-    version: "0.1.0",
+    version: getCliVersion(),
   });
 
   // --- account ----------------------------------------------------------
@@ -133,22 +135,9 @@ function buildServer() {
     },
   }, async (args) => {
     // Resolve gids: 3-part account_id:folder:uid (preferred) or legacy account_id:uid.
-    const refs = args.ids.map((s) => {
-      const parts = String(s).split(":");
-      if (parts.length >= 3 && parts[0] && /^\d+$/.test(parts[parts.length - 1])) {
-        return { id: parts[parts.length - 1], account_id: parts[0], folder: parts.slice(1, -1).join(":") };
-      }
-      const idx = String(s).lastIndexOf(":");
-      if (idx > 0 && /^\d+$/.test(String(s).slice(idx + 1))) return { id: String(s).slice(idx + 1), account_id: String(s).slice(0, idx), folder: "" };
-      return { id: String(s), account_id: "", folder: "" };
-    });
-    let resolvedAccount = args.account_id || "";
-    const fromGids = new Set(refs.map((r) => r.account_id).filter(Boolean));
-    if (!resolvedAccount && fromGids.size === 1) resolvedAccount = [...fromGids][0];
-    else if (!resolvedAccount && fromGids.size > 1) {
-      return _toolResult({ success: false, error: `Mixed account_ids in gids (${[...fromGids].join(", ")}); pass account_id explicitly`, error_code: "ambiguous_account" });
-    }
-    const ids = refs.map((r) => r.id);
+    const r = _resolveRefs(args.ids, args.account_id);
+    if (r.error) return _refsError(r);
+    const { refs, ids, accountId: resolvedAccount } = r;
     const explicitFolder = args.folder || "";
     const baseOpts = {
       account_id: resolvedAccount,
@@ -162,7 +151,7 @@ function buildServer() {
       return _toolResult(await email.showEmail({ email_id: ids[0], folder, ...baseOpts }), false);
     }
     if (explicitFolder) return _toolResult(await email.showEmails({ email_ids: ids, folder: explicitFolder, ...baseOpts }), false);
-    return _toolResult(await email.showEmailsResolved({ refs: refs.map((r) => ({ id: r.id, folder: r.folder })), ...baseOpts }), false);
+    return _toolResult(await email.showEmailsResolved({ refs, ...baseOpts }), false);
   });
 
   server.registerTool("email_folders", {
@@ -184,10 +173,12 @@ function buildServer() {
       confirm: z.boolean().optional().describe("Apply changes (default false = dry-run preview)."),
     },
   }, async (args) => {
-    const { accountId, refs } = _resolveRefs(args.ids, args.account_id);
+    const r = _resolveRefs(args.ids, args.account_id);
+    if (r.error) return _refsError(r);
+    const { accountId, refs } = r;
     if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
-    const groups = await _folderGroups(refs, accountId, args.folder);
-    return _toolResult(await _mutateByFolder(groups, (ids, folder) => email.markEmails({
+    const groups = await resolveFolderGroups(email, refs, accountId, args.folder);
+    return _toolResult(await mutateByFolder(groups, (ids, folder) => email.markEmails({
       email_ids: ids,
       mark_as: args.mark_as,
       folder,
@@ -208,10 +199,12 @@ function buildServer() {
       confirm: z.boolean().optional(),
     },
   }, async (args) => {
-    const { accountId, refs } = _resolveRefs(args.ids, args.account_id);
+    const r = _resolveRefs(args.ids, args.account_id);
+    if (r.error) return _refsError(r);
+    const { accountId, refs } = r;
     if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
-    const groups = await _folderGroups(refs, accountId, args.folder);
-    return _toolResult(await _mutateByFolder(groups, (ids, folder) => email.deleteEmails({
+    const groups = await resolveFolderGroups(email, refs, accountId, args.folder);
+    return _toolResult(await mutateByFolder(groups, (ids, folder) => email.deleteEmails({
       email_ids: ids,
       folder,
       permanent: Boolean(args.permanent),
@@ -233,7 +226,9 @@ function buildServer() {
       confirm: z.boolean().optional(),
     },
   }, async (args) => {
-    const { accountId, refs } = _resolveRefs([args.id], args.account_id);
+    const r = _resolveRefs([args.id], args.account_id);
+    if (r.error) return _refsError(r);
+    const { accountId, refs } = r;
     if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
     const folder = args.folder || (await email.resolveEmailFolder({ account_id: accountId, uid: refs[0].id, folder: refs[0].folder }));
     return _toolResult(await email.flagEmail({
@@ -257,11 +252,13 @@ function buildServer() {
       confirm: z.boolean().optional(),
     },
   }, async (args) => {
-    const { accountId, refs } = _resolveRefs(args.ids, args.account_id);
+    const r = _resolveRefs(args.ids, args.account_id);
+    if (r.error) return _refsError(r);
+    const { accountId, refs } = r;
     if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
     // The gid's folder is the SOURCE; an explicit source_folder overrides it.
-    const groups = await _folderGroups(refs, accountId, args.source_folder);
-    return _toolResult(await _mutateByFolder(groups, (ids, source) => email.moveEmails({
+    const groups = await resolveFolderGroups(email, refs, accountId, args.source_folder);
+    return _toolResult(await mutateByFolder(groups, (ids, source) => email.moveEmails({
       email_ids: ids,
       target_folder: args.target_folder,
       source_folder: source,
@@ -393,53 +390,14 @@ function buildServer() {
   return server;
 }
 
-// Parse a ref: 3-part gid account_id:folder:uid (preferred), legacy 2-part
-// account_id:uid, or a bare uid. Folder is "" when not encoded.
-function _parseRef(s) {
-  const str = String(s);
-  const parts = str.split(":");
-  if (parts.length >= 3 && parts[0] && /^\d+$/.test(parts[parts.length - 1])) {
-    return { id: parts[parts.length - 1], account_id: parts[0], folder: parts.slice(1, -1).join(":") };
-  }
-  const idx = str.lastIndexOf(":");
-  if (idx > 0 && /^\d+$/.test(str.slice(idx + 1))) return { id: str.slice(idx + 1), account_id: str.slice(0, idx), folder: "" };
-  return { id: str, account_id: "", folder: "" };
-}
-
+// Gid parsing / account resolution is shared with the CLI (cli/targets.js), so
+// mixed-account gids fail the same way here: error_code "ambiguous_account".
 function _resolveRefs(ids, explicitAccountId) {
-  const refs = ids.map(_parseRef);
-  let accountId = explicitAccountId || "";
-  const fromGids = new Set(refs.map((r) => r.account_id).filter(Boolean));
-  if (!accountId && fromGids.size === 1) accountId = [...fromGids][0];
-  return { ids: refs.map((r) => r.id), accountId, refs };
+  return resolveEmailRefs(ids, explicitAccountId, { split: false, accountParam: "account_id" });
 }
 
-// Group ref ids by the folder to mutate: an explicit folder arg wins; otherwise
-// the gid's own folder; otherwise the cache (resolveEmailFolder); otherwise
-// INBOX. UIDs are per-folder in IMAP, so mutating in the wrong folder hits the
-// wrong message — this keeps 3-part gids self-describing for mutations too.
-async function _folderGroups(refs, accountId, explicitFolder) {
-  const groups = new Map();
-  for (const r of refs) {
-    const folder = explicitFolder
-      ? explicitFolder
-      : await email.resolveEmailFolder({ account_id: accountId, uid: r.id, folder: r.folder });
-    if (!groups.has(folder)) groups.set(folder, []);
-    groups.get(folder).push(r.id);
-  }
-  return groups;
-}
-
-// Apply a per-folder mutation (mk(ids, folder) -> result) and merge. Single
-// group returns the result directly (with its folder); multiple groups are
-// wrapped with a per-folder results[] list.
-async function _mutateByFolder(groups, mk) {
-  const results = [];
-  for (const [folder, ids] of groups) {
-    results.push({ folder, ...(await mk(ids, folder)) });
-  }
-  if (results.length === 1) return results[0];
-  return { success: results.every((r) => r && r.success), folders_count: results.length, results };
+function _refsError(r) {
+  return _toolResult({ success: false, error: r.error, error_code: r.error_code });
 }
 
 async function startStdioServer() {
@@ -449,4 +407,4 @@ async function startStdioServer() {
   // McpServer holds the loop alive via the transport.
 }
 
-module.exports = { buildServer, startStdioServer, _parseRef, _resolveRefs, _folderGroups };
+module.exports = { buildServer, startStdioServer, _resolveRefs };

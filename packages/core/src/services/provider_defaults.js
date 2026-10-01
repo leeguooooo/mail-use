@@ -28,8 +28,10 @@ const DEFAULTS = {
     imap_port: 993,
     imap_secure: true,
     smtp_host: "smtp.gmail.com",
-    smtp_port: 587,
-    smtp_secure: false,
+    // Implicit TLS (RFC 8314). Some networks blackhole 587 to Google — the TCP
+    // connect succeeds but the greeting never arrives — while 465 works.
+    smtp_port: 465,
+    smtp_secure: true,
   },
   outlook: {
     imap_host: "outlook.office365.com",

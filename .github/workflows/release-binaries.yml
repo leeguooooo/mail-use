@@ -6,13 +6,54 @@ on:
       - "v*"
   workflow_dispatch: {}
 
+# The Node major embedded in the shipped binary (Node SEA uses the very node
+# that runs the build). Keep test.yml's matrix covering it.
+env:
+  SHIPPED_NODE: "24"
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Tests are platform-independent (mocked IMAP), so they run once here instead
+  # of once per build target.
+  test:
+    name: Lint + test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.SHIPPED_NODE }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Run tests
+        env:
+          MAILBOX_NO_DAEMON: "1"
+        run: pnpm test
+
   build:
     name: Build ${{ matrix.target }}
+    needs: test
     runs-on: ${{ matrix.runs_on }}
+    permissions:
+      contents: read
+      id-token: write # build provenance (Sigstore OIDC)
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -23,27 +64,30 @@ jobs:
             runs_on: macos-15-intel
           - target: linux-x64-gnu
             runs_on: ubuntu-22.04
+          - target: linux-arm64-gnu
+            runs_on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: "10"
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.SHIPPED_NODE }}
+          cache: pnpm
+
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       # Bake the real version into the binary via packages/cli/src/_version.js.
       # It is a plain JS module (not a package.json), so stamping it has no
-      # lockfile impact and pkg bundles it statically.
+      # lockfile impact and esbuild bundles it statically.
       - name: Bake CLI version (for `mail-use --version`)
         shell: bash
         run: |
@@ -55,8 +99,17 @@ jobs:
             *) echo "ref '$GITHUB_REF_NAME' is not a vX.Y.Z tag; leaving default" ;;
           esac
 
-      - name: Build mail-use binary
-        run: pnpm build:binary
+      # Install + tests already ran (above / in the test job). The build still
+      # launches the finished binary for an MCP smoke test before it passes.
+      - name: Build mail-use binary (Node SEA)
+        run: node scripts/build_binary.js --skip-install --skip-tests
+
+      - name: Check the binary runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./dist/mail-use --version
+          ls -l dist/mail-use
 
       - name: Package artifact
         shell: bash
@@ -65,6 +118,13 @@ jobs:
           mkdir -p out
           tar -czf "out/mail-use-${{ matrix.target }}.tar.gz" -C dist mail-use
           shasum -a 256 "out/mail-use-${{ matrix.target }}.tar.gz" > "out/mail-use-${{ matrix.target }}.tar.gz.sha256"
+
+      # Signed SLSA provenance for the tarball. Consumers can check it with:
+      #   gh attestation verify mail-use-<target>.tar.gz --repo leeguooooo/mail-use
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/mail-use-${{ matrix.target }}.tar.gz
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -76,6 +136,8 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4

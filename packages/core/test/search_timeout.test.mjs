@@ -56,3 +56,23 @@ describe("WP review-fix: search deadline", () => {
     expect(r.emails.length).toBeGreaterThan(0);
   });
 });
+
+describe("search date parsing (same rules as list)", () => {
+  beforeEach(() => {
+    const root = path.join(import.meta.dirname, ".tmp", "search_dates");
+    fs.rmSync(root, { recursive: true, force: true });
+    setTestEnv(root);
+    resetMockState();
+  });
+
+  it("accepts a relative date_from on its own (MCP passes it unexpanded)", async () => {
+    const r = await email.searchEmails({ date_from: "7d", account_id: "mock_acc", folder: "INBOX" });
+    expect(r.success).toBe(true);
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it("reports an unparseable date instead of silently dropping it", async () => {
+    const r = await email.searchEmails({ query: "hello", date_from: "not-a-date", account_id: "mock_acc", folder: "INBOX" });
+    expect(r.warnings).toEqual([expect.stringMatching(/not-a-date/)]);
+  });
+});

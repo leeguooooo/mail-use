@@ -276,8 +276,8 @@ describe("skills are only refreshed with --skills", () => {
     expect(line).toBe("skill (git) /p: not refreshed; pass --skills or run: git -C /r pull --ff-only");
   });
 
-  it("main.js refreshes only behind opts.skills", () => {
-    const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "main.js"), "utf8");
+  it("the upgrade command refreshes only behind opts.skills", () => {
+    const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "commands", "upgrade.js"), "utf8");
     expect(src).toMatch(/opts\.skills \? skillRefresh\.refreshSkills\(found\)/);
   });
 });

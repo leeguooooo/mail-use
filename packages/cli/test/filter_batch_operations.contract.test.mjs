@@ -54,19 +54,23 @@ async function runCli(argv, email) {
   const stderr = [];
   const exitCalls = [];
 
+  // Inject the fake core at the CLI's single proxy seam. This used to hook
+  // `./core_client` and additionally require the parent to be main.js, which
+  // silently stopped matching the moment the proxies moved into their own
+  // module — the mock was skipped, the CLI went to real IMAP, and the tests hung
+  // rather than failing. Matching on the module being required (not on who
+  // requires it) has no such blind spot.
   Module._load = function patchedLoad(request, parent, isMain) {
-    if (request === "./core_client" && parent && parent.filename === mainPath) {
+    if (request === "./proxies") {
       return {
-        makeProxies: () => ({
-          accounts: {},
-          email,
-          imap: {},
-          smtp: {},
-          sync: {},
-          digest: {},
-          monitor: {},
-          inbox: {},
-        }),
+        accounts: {},
+        email,
+        imap: {},
+        smtp: {},
+        sync: {},
+        digest: {},
+        monitor: {},
+        inbox: {},
       };
     }
     return originalLoad.apply(this, [request, parent, isMain]);

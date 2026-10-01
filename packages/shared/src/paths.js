@@ -29,8 +29,26 @@ function getDataDir() {
   return path.join(dataHome, "mailbox");
 }
 
-function ensureDir(p) {
-  fs.mkdirSync(p, { recursive: true });
+// Config holds credentials and data holds mail metadata and attachments, so
+// every directory we create is owner-only. `tighten` also chmods a directory
+// that already exists — used only for directories that are ours alone (the
+// default mailbox dirs and anything inside them), never for a path the user
+// pointed us at, which may be shared with other things they own.
+const DIR_MODE = 0o700;
+
+function ensureDir(p, { tighten = false } = {}) {
+  fs.mkdirSync(p, { recursive: true, mode: DIR_MODE });
+  if (tighten) {
+    try {
+      const st = fs.statSync(p);
+      if ((st.mode & 0o077) !== 0) fs.chmodSync(p, DIR_MODE);
+    } catch { /* best-effort */ }
+  }
+}
+
+function _isInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 function readConfigToml(configTomlPath) {
@@ -48,8 +66,10 @@ function getPathConfig() {
   const configDir = getConfigDir();
   const dataDir = getDataDir();
 
-  ensureDir(configDir);
-  ensureDir(dataDir);
+  const configOverridden = Boolean(_envPath("MAILBOX_CONFIG_DIR")) && _envPath("MAILBOX_CONFIG_DIR") !== ".";
+  const dataOverridden = Boolean(_envPath("MAILBOX_DATA_DIR")) && _envPath("MAILBOX_DATA_DIR") !== ".";
+  ensureDir(configDir, { tighten: !configOverridden });
+  ensureDir(dataDir, { tighten: !dataOverridden });
 
   const authJson = path.join(configDir, "auth.json");
   const configToml = path.join(configDir, "config.toml");
@@ -100,9 +120,9 @@ function getPathConfig() {
   const tempDir = resolvePath(cfgStr("storage", "temp_dir"), path.join(dataDir, "tmp"));
   const attachmentsDir = resolvePath(cfgStr("storage", "attachments_dir"), path.join(dataDir, "attachments"));
 
-  ensureDir(logDir);
-  ensureDir(tempDir);
-  ensureDir(attachmentsDir);
+  for (const d of [logDir, tempDir, attachmentsDir]) {
+    ensureDir(d, { tighten: _isInside(d, dataDir) && !_isInside(dataDir, d) });
+  }
 
   return {
     configDir,
