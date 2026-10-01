@@ -125,6 +125,11 @@ async function watchFolder({ account_id, folder = "INBOX", filter = {}, onEvent 
     while (!stopped) {
       try {
         await client.idle();
+        // idle() resolves at once, without issuing IDLE, while imapflow's own
+        // auto-IDLE holds the connection (since imapflow 2 it re-arms after an
+        // IDLE ends on its own). Looping straight back would spin on resolved
+        // promises and starve the event loop, so wait it out instead.
+        if (client.idling && !stopped) await new Promise((r) => { setTimeout(r, 1000); });
       } catch (e) {
         if (stopped) break;
         if (typeof onEvent === "function") {

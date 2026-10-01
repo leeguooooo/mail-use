@@ -16,11 +16,15 @@ function createImapClient(account, { onError } = {}) {
   const port = Number(account.imap.port);
   const secure = Boolean(account.imap.secure);
   // Implicit TLS (993): connect over TLS. Otherwise require STARTTLS to refuse plaintext.
+  // ImapFlow's switch is doSTARTTLS (requireTLS is nodemailer's name and ImapFlow
+  // ignores it): true fails the connect when the server offers no STARTTLS,
+  // where undefined would quietly carry on in cleartext, password included.
+  // secure=true together with doSTARTTLS=true is rejected by ImapFlow.
   const client = new ImapFlow({
     host: account.imap.host,
     port,
     secure,
-    requireTLS: !secure,
+    doSTARTTLS: secure ? undefined : true,
     auth: { user: account.email, pass: account.password },
     tls: { rejectUnauthorized: !_allowInsecureTls(), minVersion: "TLSv1.2" },
     logger: false,
