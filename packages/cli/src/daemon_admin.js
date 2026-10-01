@@ -54,4 +54,25 @@ function daemonAdmin(fnName, { timeoutMs = 2000, sockPath = getSocketPath() } = 
   });
 }
 
-module.exports = { daemonAdmin };
+// Does anything accept a connection on the daemon socket right now? A
+// successful connect is enough: only a live daemon binds this path, and a stale
+// socket file refuses the connection. Sends nothing.
+function socketAccepts({ sockPath = getSocketPath(), timeoutMs = 1000 } = {}) {
+  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const c = net.createConnection(sockPath);
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(v);
+    };
+    c.once("connect", () => { try { c.end(); } catch { /* ignore */ } done(true); });
+    c.once("error", () => done(false));
+    timer = setTimeout(() => { try { c.destroy(); } catch { /* ignore */ } done(false); }, timeoutMs);
+  });
+}
+
+module.exports = { daemonAdmin, socketAccepts };

@@ -20,6 +20,7 @@ const path = require("path");
 const core = require("@mail-use/core");
 const { ImapPool } = require("@mail-use/core/src/services/imap_pool");
 const { getSocketPath, getPidFilePath } = require("./daemon_paths");
+const { daemonAdmin, socketAccepts } = require("./daemon_admin");
 const { digest, monitor, inbox, cleanup } = (() => {
   try { return require("@mail-use/workflows"); } catch { return {}; }
 })();
@@ -101,7 +102,7 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
 
   // If another daemon owns the socket, refuse to clobber it.
   if (fs.existsSync(sockPath)) {
-    const reachable = await _probe(sockPath).catch(() => false);
+    const reachable = await socketAccepts({ sockPath, timeoutMs: 500 }).catch(() => false);
     if (reachable) {
       throw Object.assign(new Error(`mail-use daemon already running on ${sockPath}`), { code: "EADDRINUSE" });
     }
@@ -325,15 +326,6 @@ function _respond(conn, payload) {
   try { conn.write(JSON.stringify(payload) + "\n"); } catch { /* ignore */ }
 }
 
-async function _probe(sockPath) {
-  return new Promise((resolve) => {
-    const c = net.createConnection(sockPath);
-    c.once("connect", () => { c.end(); resolve(true); });
-    c.once("error", () => resolve(false));
-    setTimeout(() => { try { c.destroy(); } catch {} resolve(false); }, 500);
-  });
-}
-
 // ---------- autostart (launchd / systemd-user) ----------
 
 // 改名 mailbox -> mail-use 时，launchd label / systemd unit / socket 路径刻意不动：
@@ -540,12 +532,10 @@ async function uninstallAutostart({ platform = process.platform, exec = _default
 }
 
 function _defaultPing() {
-  const { daemonAdmin } = require("./daemon_admin");
   return daemonAdmin("__ping", { timeoutMs: 1500 });
 }
 
 function _defaultShutdown() {
-  const { daemonAdmin } = require("./daemon_admin");
   return daemonAdmin("__shutdown");
 }
 
