@@ -79,6 +79,13 @@ mail-use mcp config --json   # prints a paste-ready mcpServers entry
 If the user hasn't done step 1, every CLI call will fail with `command not found`.
 Always probe with `mail-use --version` first when in doubt.
 
+**The user wants to read the same mail themselves** (Apple Mail on the Mac, or iPhone):
+run `mail-use apple-mail` (needs mail-use ≥ 3.6). It builds a configuration profile from the
+configured accounts and opens it; tell the user the one manual step it prints — System
+Settings → General → Device Management → install "mail-use 邮箱账号". For an iPhone use
+`--output <file> --no-open` and have them AirDrop it. Never paste the profile's contents into
+chat: it carries the passwords.
+
 ## How to drive this CLI from an agent loop
 
 Always pass `--json` so the response is machine-parseable. Check `success`

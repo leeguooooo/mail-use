@@ -155,6 +155,27 @@ Config locations:
 - Credentials: `~/.config/mailbox/auth.json`
 - Other settings: `~/.config/mailbox/config.toml`
 
+## Use the same accounts in Apple Mail
+
+mail-use is built for agents, but people can read the same mailboxes in Apple Mail without
+typing a single server name, port or authorization code:
+
+```bash
+mail-use apple-mail                       # all accounts; opens the profile in System Settings
+mail-use apple-mail --account-id me@qq.com
+mail-use apple-mail --output ~/Desktop/mail.mobileconfig --no-open   # e.g. AirDrop it to an iPhone
+```
+
+It writes a configuration profile with the IMAP/SMTP settings mail-use already uses and opens
+it. macOS only lets System Settings install profiles, so one step is left: **System Settings →
+General → Device Management → mail-use 邮箱账号 → Install**, then enter your Mac password.
+Mail and mail-use both talk to the server, so read/unread, moves and deletes stay in sync.
+
+The profile carries passwords in plaintext: the temporary copy is removed 60 s after it is
+opened, and a file written with `--output` is yours to delete. Running it again replaces the
+installed profile instead of adding duplicate accounts; removing the profile removes the
+accounts from Mail.
+
 ## Common commands
 
 ```bash
