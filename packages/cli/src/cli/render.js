@@ -1,6 +1,26 @@
 // Human-readable terminal rendering: the tables printed when --json is off.
 // Width-aware, so wide CJK glyphs do not break column alignment.
 
+const fs = require("fs");
+
+// Write text to stdout synchronously. Every action ends in process.exit(), and
+// process.stdout.write is asynchronous on pipes (macOS, and Linux sockets), so a
+// table larger than the pipe buffer (~64 KiB) was cut off when piped into
+// less/grep. Same blocking loop as printJson in @mail-use/shared.
+function _out(text) {
+  const buf = Buffer.from(String(text));
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      offset += fs.writeSync(1, buf, offset, buf.length - offset);
+    } catch (e) {
+      if (e && (e.code === "EAGAIN" || e.code === "EWOULDBLOCK")) continue;
+      if (e && e.code === "EPIPE") return;
+      throw e;
+    }
+  }
+}
+
 function _printTextNotImplemented(label) {
   // Goes to stderr so it never corrupts a JSON pipe consumer.
   process.stderr.write(`${label} (text mode) is not implemented yet. Use --json.\n`);
@@ -59,14 +79,14 @@ function _printRows(rows, columns) {
   const widths = columns.map((c) => Math.max(_displayWidth(c.title), ...rows.map((r) => Math.min(c.max || 80, _displayWidth(String(r[c.key] != null ? r[c.key] : ""))))));
   const sep = "  ";
   const header = columns.map((c, i) => _padRight(c.title, widths[i])).join(sep);
-  process.stdout.write(header + "\n");
-  process.stdout.write(columns.map((_, i) => "-".repeat(widths[i])).join(sep) + "\n");
+  _out(header + "\n");
+  _out(columns.map((_, i) => "-".repeat(widths[i])).join(sep) + "\n");
   for (const r of rows) {
     const line = columns.map((c, i) => {
       const v = r[c.key] != null ? String(r[c.key]) : "";
       return _padRight(_truncate(v, widths[i]), widths[i]);
     }).join(sep);
-    process.stdout.write(line + "\n");
+    _out(line + "\n");
   }
 }
 
@@ -77,7 +97,7 @@ function _printAccountList(result) {
   }
   const rows = result.accounts || [];
   if (!rows.length) {
-    process.stdout.write("(no accounts configured)\n");
+    _out("(no accounts configured)\n");
     return;
   }
   _printRows(rows, [
@@ -87,7 +107,7 @@ function _printAccountList(result) {
     { key: "imap_host", title: "IMAP HOST", max: 30 },
     { key: "description", title: "DESCRIPTION", max: 30 },
   ]);
-  process.stdout.write(`\n${rows.length} account(s)\n`);
+  _out(`\n${rows.length} account(s)\n`);
 }
 
 function _printEmailList(result) {
@@ -104,7 +124,7 @@ function _printEmailList(result) {
     id: e.id || e.uid || "",
   }));
   if (!rows.length) {
-    process.stdout.write("(no emails)\n");
+    _out("(no emails)\n");
     if (result.failed_accounts && result.failed_accounts.length) {
       for (const fa of result.failed_accounts) {
         process.stderr.write(`account ${fa.account || fa.account_id || ""} failed: ${fa.error || ""}\n`);
@@ -121,7 +141,7 @@ function _printEmailList(result) {
     { key: "id", title: "UID", max: 12 },
   ]);
   const totalFound = result.total_found != null ? result.total_found : result.total_in_folder;
-  process.stdout.write(`\n${rows.length} shown` + (totalFound != null ? ` (of ${totalFound})` : "") + "\n");
+  _out(`\n${rows.length} shown` + (totalFound != null ? ` (of ${totalFound})` : "") + "\n");
 }
 
 function _printFolderList(result) {
@@ -135,10 +155,11 @@ function _printFolderList(result) {
     { key: "delimiter", title: "DELIM", max: 5 },
     { key: "attributes", title: "FLAGS", max: 30 },
   ]);
-  process.stdout.write(`\n${rows.length} folder(s) in ${result.account || "account"}\n`);
+  _out(`\n${rows.length} folder(s) in ${result.account || "account"}\n`);
 }
 
 module.exports = {
+  _out,
   _printTextNotImplemented,
   _displayWidth,
   _padRight,

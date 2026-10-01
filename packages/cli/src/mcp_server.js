@@ -11,6 +11,7 @@ const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio
 const { z } = require("zod");
 const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
+const { getCliVersion } = require("./cli_version");
 
 const { accounts, email, sync, digest, inbox, cleanup } = makeProxies();
 
@@ -37,7 +38,7 @@ function _toolResult(result, leanByDefault = true) {
 function buildServer() {
   const server = new McpServer({
     name: "mail-use",
-    version: "0.1.0",
+    version: getCliVersion(),
   });
 
   // --- account ----------------------------------------------------------

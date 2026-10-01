@@ -2,9 +2,12 @@ const { Command } = require("commander");
 
 const { contract } = require("@mail-use/shared");
 const { getCliVersion: _resolveCliVersion } = require("./cli_version");
-const { accounts, email, imap, smtp, sync, digest, monitor, inbox, cleanup } = require("./proxies");
+const proxies = require("./proxies");
+// imap/smtp stay on the object: they are lazy getters, and destructuring them
+// here would load all of core on every invocation.
+const { accounts, email, sync, digest, monitor, inbox, cleanup } = proxies;
 const {
-  _printTextNotImplemented, _displayWidth, _padRight, _truncate, _printRows,
+  _out, _printTextNotImplemented, _displayWidth, _padRight, _truncate, _printRows,
   _printAccountList, _printEmailList, _printFolderList,
 } = require("./cli/render");
 const {
@@ -302,39 +305,8 @@ function _createStopSignal() {
 // Send an admin RPC (__ping/__reload/__shutdown) directly to the daemon
 // socket without going through the makeProxies fallback path — these
 // methods only make sense when a daemon is actually listening.
-async function _daemonAdmin(fnName) {
-  const net = require("net");
-  const fsLocal = require("fs");
-  const { getSocketPath } = require("./daemon");
-  const sockPath = getSocketPath();
-  if (!fsLocal.existsSync(sockPath)) {
-    return { success: false, error: `daemon socket not found at ${sockPath}`, error_code: "not_running" };
-  }
-  return new Promise((resolve) => {
-    const conn = net.createConnection(sockPath);
-    let buf = "";
-    let settled = false;
-    const settle = (val) => { if (settled) return; settled = true; try { conn.end(); } catch {} resolve(val); };
-    conn.setEncoding("utf8");
-    conn.on("data", (chunk) => {
-      buf += chunk;
-      const idx = buf.indexOf("\n");
-      if (idx < 0) return;
-      const line = buf.slice(0, idx);
-      try {
-        const msg = JSON.parse(line);
-        if (msg.ok) settle({ success: true, ...(msg.result || {}) });
-        else settle({ success: false, error: msg.error || "daemon error", error_code: msg.error_code });
-      } catch (e) {
-        settle({ success: false, error: `invalid daemon response: ${e.message}`, error_code: "operation_failed" });
-      }
-    });
-    conn.on("error", (e) => settle({ success: false, error: e.message, error_code: "network_error" }));
-    conn.on("connect", () => {
-      conn.write(JSON.stringify({ id: 1, fn: fnName }) + "\n");
-    });
-    setTimeout(() => settle({ success: false, error: "daemon did not respond within 2s", error_code: "network_error" }), 2000);
-  });
+function _daemonAdmin(fnName) {
+  return require("./daemon_admin").daemonAdmin(fnName);
 }
 
 async function main(argv) {
@@ -427,7 +399,7 @@ async function main(argv) {
             };
 
             try {
-              const im = await imap.testConnection(a, "INBOX");
+              const im = await proxies.imap.testConnection(a, "INBOX");
               item.imap = { success: Boolean(im && im.success), total_emails: im.total_emails || 0, unread_emails: im.unread_emails || 0 };
               if (im && im.error) item.imap.error = im.error;
             } catch (e) {
@@ -435,7 +407,7 @@ async function main(argv) {
             }
 
             try {
-              const sm = await smtp.testConnection(a);
+              const sm = await proxies.smtp.testConnection(a);
               item.smtp = { success: Boolean(sm && sm.success) };
               if (sm && sm.error) item.smtp.error = sm.error;
             } catch (e) {
@@ -1248,9 +1220,9 @@ async function main(argv) {
         asJson,
         pretty,
         printText: () => {
-          if (!hits.length) { process.stdout.write(`no code in the last ${opts.since}\n`); return; }
+          if (!hits.length) { _out(`no code in the last ${opts.since}\n`); return; }
           const h = hits[0];
-          process.stdout.write(`${h.code}\n  from ${h.from} — ${h.subject}\n  ${h.date}  ${h.gid}\n`);
+          _out(`${h.code}\n  from ${h.from} — ${h.subject}\n  ${h.date}  ${h.gid}\n`);
         },
       });
       process.exit(rc);
@@ -1262,9 +1234,15 @@ async function main(argv) {
     .description("Upgrade the installed binary from the latest GitHub Release")
     .option("--check", "Only report whether a newer version exists; change nothing")
     .option("--tag <vX.Y.Z>", "Install this exact release instead of the latest (also allows downgrade)")
+    .option("--insecure", "Install even if the release publishes no checksum (not recommended)")
     .action(async (opts) => {
       const upgrade = require("./upgrade");
       const current = _resolveCliVersion();
+      if (opts.tag && !upgrade.isValidTag(opts.tag)) {
+        const rc = contract.invalidUsage({ message: `Invalid --tag "${opts.tag}" (expected vX.Y.Z)`, asJson, pretty });
+        process.exit(rc);
+        return;
+      }
       try {
         if (opts.check) {
           const result = await upgrade.checkForUpdate(current);
@@ -1273,7 +1251,7 @@ async function main(argv) {
             asJson,
             pretty,
             printText: () => {
-              process.stdout.write(
+              _out(
                 result.update_available
                   ? `${result.current} -> ${result.latest} available\n  run: mail-use upgrade\n`
                   : `${result.current} is the latest\n`
@@ -1285,6 +1263,7 @@ async function main(argv) {
         const result = await upgrade.performUpgrade({
           currentVersion: current,
           targetTag: opts.tag || "",
+          insecure: Boolean(opts.insecure),
           log: (m) => { if (!asJson) process.stderr.write(`mail-use upgrade: ${m}\n`); },
         });
         const rc = contract.handleJsonOrText({
@@ -1292,14 +1271,17 @@ async function main(argv) {
           asJson,
           pretty,
           printText: () => {
-            if (result.upgraded) {
-              process.stdout.write(`upgraded ${result.from} -> ${result.to}\n`);
+            if (!result.success) {
+              process.stderr.write(`upgrade failed: ${result.error || "unknown error"}\n`);
+            } else if (result.upgraded) {
+              _out(`upgraded ${result.from} -> ${result.to}\n`);
               const d = result.daemon || {};
-              if (!d.was_running) process.stdout.write("  daemon: was not running\n");
-              else if (d.restarted) process.stdout.write("  daemon: restarted on the new binary\n");
-              else process.stdout.write(`  daemon: RESTART FAILED — still on the old binary${d.error ? ` (${d.error})` : ""}\n    fix with: mail-use daemon install\n`);
+              if (!d.was_running) _out("  daemon: was not running\n");
+              else if (d.restarted) _out(`  daemon: restarted on the new binary (pid ${d.old_pid} -> ${d.new_pid})\n`);
+              else if (d.method === "shutdown" && !d.error) _out(`  daemon: stopped — ${d.hint}\n`);
+              else _out(`  daemon: RESTART FAILED — still on the old binary${d.error ? ` (${d.error})` : ""}\n    fix with: mail-use daemon install\n`);
             }
-            else process.stdout.write(`${result.message || "nothing to do"}\n`);
+            else _out(`${result.message || "nothing to do"}\n`);
           },
         });
         process.exit(rc);
@@ -1465,7 +1447,15 @@ async function main(argv) {
         // Block forever until SIGINT/SIGTERM
         await new Promise(() => {});
       } catch (e) {
-        const result = { success: false, error: (e && e.message) || "daemon failed", error_code: e && e.code === "EADDRINUSE" ? "already_running" : "operation_failed" };
+        // Another daemon already serves the socket: the goal ("a daemon is
+        // running") is met, so exit 0. A non-zero exit here is what made
+        // launchd/systemd respawn this process in a tight loop.
+        if (e && e.code === "EADDRINUSE") {
+          const result = { success: true, already_running: true, message: (e && e.message) || "daemon already running" };
+          const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: () => process.stderr.write(result.message + "\n") });
+          process.exit(rc);
+        }
+        const result = { success: false, error: (e && e.message) || "daemon failed", error_code: "operation_failed" };
         const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: () => process.stderr.write(result.error + "\n") });
         process.exit(rc);
       }
@@ -1473,12 +1463,12 @@ async function main(argv) {
   daemonCmd
     .command("install")
     .description("Install a launchd LaunchAgent (macOS) or systemd user unit (Linux) to autostart the daemon at login")
-    .option("--sync-interval <seconds>", "Background sync interval", "300")
+    .option("--sync-interval <seconds>", "Background sync interval (default: keep the installed unit's, else 300)")
     .action(async (opts) => {
       const { installAutostart } = require("./daemon");
-      const result = await installAutostart({ syncIntervalSec: Number(opts.syncInterval || 300) });
+      const result = await installAutostart({ syncIntervalSec: opts.syncInterval != null ? Number(opts.syncInterval) : undefined });
       const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => {
-        if (r.success) process.stdout.write(`installed: ${r.unit_path}\n  next: ${r.activate_hint || "(start it now with: mail-use daemon start)"}\n`);
+        if (r.success) _out(`installed: ${r.unit_path}\n  next: ${r.activate_hint || "(start it now with: mail-use daemon start)"}\n`);
         else process.stderr.write((r.error || "install failed") + "\n");
       } });
       process.exit(rc);
@@ -1490,7 +1480,7 @@ async function main(argv) {
       const { uninstallAutostart } = require("./daemon");
       const result = await uninstallAutostart();
       const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => {
-        if (r.success) process.stdout.write(`uninstalled: ${r.unit_path || "(no unit found)"}\n`);
+        if (r.success) _out(`uninstalled: ${r.unit_path || "(no unit found)"}\n`);
         else process.stderr.write((r.error || "uninstall failed") + "\n");
       } });
       process.exit(rc);
@@ -1499,36 +1489,52 @@ async function main(argv) {
     .command("status")
     .description("Probe the daemon and report version + pool stats")
     .action(async () => {
-      const result = await _daemonAdmin("__ping");
+      let result = await _daemonAdmin("__ping");
+      if (!result.success) {
+        // The socket did not answer; the pid file tells "not running" apart
+        // from "running but wedged", and a stale one is cleaned up.
+        const { readDaemonPid } = require("./daemon_paths");
+        const pf = readDaemonPid();
+        if (pf && pf.alive) {
+          result = { ...result, pid: pf.pid, error: `daemon process ${pf.pid} is alive but not answering (${result.error})`, error_code: "not_responding" };
+        } else if (pf) {
+          try { require("fs").unlinkSync(pf.path); } catch { /* ignore */ }
+        }
+      }
       const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => {
         if (!r.success) { process.stderr.write((r.error || "not running") + "\n"); return; }
         const upS = r.uptime_ms != null ? Math.round(r.uptime_ms / 1000) : "?";
-        process.stdout.write(`daemon pid=${r.pid} uptime=${upS}s\n`);
-        process.stdout.write("\npool:\n");
-        if (!(r.pool || []).length) process.stdout.write("  (no accounts connected yet — prewarm or first call will populate)\n");
+        _out(`daemon pid=${r.pid} uptime=${upS}s\n`);
+        _out("\npool:\n");
+        if (!(r.pool || []).length) _out("  (no accounts connected yet — prewarm or first call will populate)\n");
         for (const p of r.pool || []) {
           const inUse = p.in_use != null ? `, ${p.in_use}/${p.clients} in use` : "";
-          process.stdout.write(`  ${p.account_id}: ${p.connected ? "connected" : "idle"}${inUse}\n`);
+          _out(`  ${p.account_id}: ${p.connected ? "connected" : "idle"}${inUse}\n`);
         }
         if (r.sync) {
-          process.stdout.write("\nsync:\n");
-          process.stdout.write(`  attempted=${r.sync.syncs_attempted} ok=${r.sync.syncs_ok} failed=${r.sync.syncs_failed}\n`);
-          if (r.sync.last_sync_at) process.stdout.write(`  last_sync_at=${r.sync.last_sync_at}\n`);
-          if (r.sync.last_sync_error) process.stdout.write(`  last_sync_error=${r.sync.last_sync_error}\n`);
-          if (r.sync.prewarm) process.stdout.write(`  prewarm=${r.sync.prewarm.completed}/${r.sync.prewarm.started} (${r.sync.prewarm.failed} failed)\n`);
+          _out("\nsync:\n");
+          _out(`  attempted=${r.sync.syncs_attempted} ok=${r.sync.syncs_ok} failed=${r.sync.syncs_failed}\n`);
+          if (r.sync.last_sync_at) _out(`  last_sync_at=${r.sync.last_sync_at}\n`);
+          if (r.sync.last_sync_error) _out(`  last_sync_error=${r.sync.last_sync_error}\n`);
+          if (r.sync.prewarm) _out(`  prewarm=${r.sync.prewarm.completed}/${r.sync.prewarm.started} (${r.sync.prewarm.failed} failed)\n`);
         }
         if (r.update && r.update.update_available) {
-          process.stdout.write(`  update: ${r.update.current} -> ${r.update.latest} available (run: mail-use upgrade)\n`);
+          _out(`  update: ${r.update.current} -> ${r.update.latest} available (run: mail-use upgrade)\n`);
         }
       } });
       process.exit(rc);
     });
   daemonCmd
     .command("stop")
-    .description("Ask the daemon to shut down cleanly")
+    .description("Stop the daemon (through launchd/systemd when it is installed as a service, so it stays stopped)")
     .action(async () => {
-      const result = await _daemonAdmin("__shutdown");
-      const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: () => process.stdout.write("daemon stopped\n") });
+      const { stopDaemon } = require("./daemon");
+      const result = await stopDaemon();
+      const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => {
+        if (!r.success) { process.stderr.write((r.error || "stop failed") + "\n"); return; }
+        _out(`daemon stopped (${r.method})\n`);
+        if (r.hint) _out(`  ${r.hint}\n`);
+      } });
       process.exit(rc);
     });
   daemonCmd
@@ -1536,7 +1542,10 @@ async function main(argv) {
     .description("Drop pooled IMAP connections (e.g. after editing auth.json)")
     .action(async () => {
       const result = await _daemonAdmin("__reload");
-      const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: () => process.stdout.write("daemon reloaded\n") });
+      const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => {
+        if (r.success) _out("daemon reloaded\n");
+        else process.stderr.write((r.error || "reload failed") + "\n");
+      } });
       process.exit(rc);
     });
 
@@ -1550,7 +1559,7 @@ async function main(argv) {
     .option("--filter-subject <s>", "Only emit emails whose subject includes this substring")
     .action(async (folder, opts) => {
       const onEvent = (evt) => {
-        process.stdout.write(JSON.stringify(evt) + "\n");
+        _out(JSON.stringify(evt) + "\n");
       };
       const result = await email.watchFolder({
         account_id: opts.accountId,
@@ -1613,7 +1622,7 @@ async function main(argv) {
         },
       };
       const result = { success: true, config: cfg, hint: "Add the mcpServers entry to your client's config (e.g. ~/Library/Application Support/Claude/claude_desktop_config.json on macOS)" };
-      const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: () => process.stdout.write(JSON.stringify(cfg, null, 2) + "\n") });
+      const rc = contract.handleJsonOrText({ result, asJson, pretty, printText: () => _out(JSON.stringify(cfg, null, 2) + "\n") });
       process.exit(rc);
     });
 
@@ -1637,10 +1646,10 @@ async function main(argv) {
         asJson,
         pretty,
         printText: (r) => {
-          if (r && r.summary_text) process.stdout.write(String(r.summary_text) + "\n");
+          if (r && r.summary_text) _out(String(r.summary_text) + "\n");
           const stats = r && r.stats;
           if (stats) {
-            process.stdout.write(`spam: ${stats.delete_spam || 0}, marketing: ${stats.delete_marketing || 0}, mark_read: ${stats.mark_as_read || 0}, attention: ${stats.needs_attention || 0}\n`);
+            _out(`spam: ${stats.delete_spam || 0}, marketing: ${stats.delete_marketing || 0}, mark_read: ${stats.mark_as_read || 0}, attention: ${stats.needs_attention || 0}\n`);
           }
         },
       });
@@ -1687,12 +1696,22 @@ async function main(argv) {
     ) {
       return 0;
     }
-    // commander throws on invalid usage (exitOverride).
-    let message = err && err.message ? err.message : "Invalid usage";
-    // Strip commander's own "error: " prefix so the JSON payload doesn't
-    // end up with `"error": "error: ..."`.
-    message = String(message).replace(/^error:\s*/i, "");
-    return contract.invalidUsage({ message, asJson, pretty });
+    if (err && typeof err.code === "string" && err.code.startsWith("commander.")) {
+      // commander throws on invalid usage (exitOverride).
+      let message = err.message || "Invalid usage";
+      // Strip commander's own "error: " prefix so the JSON payload doesn't
+      // end up with `"error": "error: ..."`.
+      message = String(message).replace(/^error:\s*/i, "");
+      return contract.invalidUsage({ message, asJson, pretty });
+    }
+    // Anything else is an action that threw at runtime (IMAP dropped, disk
+    // full, a bug). That is not the caller's usage mistake: reporting it as
+    // invalid_argument/exit 2 told agents to fix arguments that were fine.
+    const message = (err && err.message) || String(err || "operation failed");
+    const result = { success: false, error: message, error_code: contract.inferErrorCode(message) || "operation_failed" };
+    if (result.error_code === "unknown_error") result.error_code = "operation_failed";
+    contract.handleJsonOrText({ result, asJson, pretty, printText: (r) => process.stderr.write(`${r.error}\n`) });
+    return 1;
   }
 }
 
