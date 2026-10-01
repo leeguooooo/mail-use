@@ -29,6 +29,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
+          # semantic-release 25 needs ^22.14 || >=24.10; "24" resolves to the
+          # latest 24.x.
           node-version: "24"
           cache: pnpm
 
