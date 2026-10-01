@@ -13,9 +13,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     pool: "forks",
-    poolOptions: {
-      forks: { maxForks: 4, minForks: 1 },
-    },
+    maxWorkers: 4,
     // These tests spawn the real CLI as a child process. If one wedges, fail
     // the run instead of letting the worker sit on an open handle forever —
     // a hung worker is exactly what becomes an orphan when the parent goes.
