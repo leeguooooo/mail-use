@@ -13,7 +13,6 @@ const crypto = require("crypto");
 const fs = require("fs");
 const https = require("https");
 const os = require("os");
-const net = require("net");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
@@ -119,51 +118,74 @@ function resolveInstalledBinary() {
   return { path: process.execPath, packaged: true };
 }
 
-// Does a daemon answer right now?
-//
-// This connects to the daemon's Unix socket directly instead of shelling out to
-// `<binary> daemon status`. Spawning ourselves does not work from a pkg binary:
-// pkg puts PKG_EXECPATH into the environment, the child inherits it and stops
-// behaving like the CLI, so the probe always failed and every upgrade reported
-// the daemon as not running. Seen live on 3.3.1 — the daemon was demonstrably up
-// (pid 79961) and `was_running` still came back false.
-function daemonResponds() {
-  const { getSocketPath } = require("./daemon");
-  const sockPath = getSocketPath();
-  if (!fs.existsSync(sockPath)) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    const c = net.createConnection(sockPath);
-    // A successful connect is enough: only a live daemon binds this path, and a
-    // stale socket file refuses the connection.
-    c.once("connect", () => { try { c.end(); } catch { /* ignore */ } done(true); });
-    c.once("error", () => done(false));
-    setTimeout(() => { try { c.destroy(); } catch { /* ignore */ } done(false); }, 1000);
-  });
+// Release tags are vX.Y.Z (optionally -prerelease). Anything else would be
+// spliced into a download URL, so it is rejected before any request is made.
+const TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+function isValidTag(tag) {
+  return TAG_RE.test(String(tag || ""));
 }
 
-// launchd/systemd reload is asynchronous, so a probe fired immediately after the
-// reload can land in the gap between unload and load.
-async function waitForDaemon(timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await daemonResponds()) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((r) => { setTimeout(r, 500); });
+function normalizeTag(tag) {
+  const t = String(tag || "").trim();
+  return t.startsWith("v") ? t : `v${t}`;
+}
+
+// Environment for running the downloaded binary. A pkg binary exports
+// PKG_EXECPATH; a child that inherits it boots as a plain node runtime instead
+// of the CLI, so `staged --version` would fail for reasons unrelated to the
+// download. The version overrides would make any binary report what we expect.
+function childEnv(env = process.env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!k.startsWith("PKG_")) out[k] = v;
   }
+  delete out.MAILBOX_CLI_VERSION;
+  delete out.MAILBOX_VERSION;
+  out.MAILBOX_NO_DAEMON = "1";
+  return out;
+}
+
+// The new binary must actually run on this machine and report the version we
+// meant to install before it replaces the working one.
+function verifyBinary(file, wantTag, { exec = execFileSync } = {}) {
+  let out = "";
+  try {
+    out = String(exec(file, ["--version"], {
+      env: childEnv(),
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }) || "");
+  } catch (e) {
+    return { ok: false, error: `downloaded binary does not run (${String((e && e.message) || e).split("\n")[0]})` };
+  }
+  const got = out.trim().split(/\s+/).pop() || "";
+  const want = String(wantTag || "").replace(/^v/, "");
+  if (got.replace(/^v/, "") !== want) {
+    return { ok: false, error: `downloaded binary reports ${got || "no version"}, expected ${want}` };
+  }
+  return { ok: true, version: got };
 }
 
 function sha256(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-async function performUpgrade({ currentVersion, targetTag = "", log = () => {} } = {}) {
-  const target = assetTarget();
+// `deps` lets tests run the whole path offline: the http getter, the installed
+// binary location, the binary check and the daemon restart can be swapped.
+async function performUpgrade({ currentVersion, targetTag = "", insecure = false, log = () => {}, deps = {} } = {}) {
+  const get = deps.get || _get;
+  const verify = deps.verifyBinary || verifyBinary;
+  const restart = deps.restartDaemon || ((opts) => require("./daemon").restartDaemon(opts));
+  const target = deps.target !== undefined ? deps.target : assetTarget();
   if (!target) {
     return { success: false, error: `unsupported platform: ${process.platform} ${process.arch}`, error_code: "invalid_argument" };
   }
-  const bin = resolveInstalledBinary();
+  if (targetTag && !isValidTag(targetTag)) {
+    return { success: false, error: `Invalid tag "${targetTag}" (expected vX.Y.Z)`, error_code: "invalid_argument" };
+  }
+  const bin = deps.binary || resolveInstalledBinary();
   if (!bin.packaged) {
     return {
       success: false,
@@ -172,38 +194,65 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
     };
   }
 
-  const info = targetTag
-    ? { tag: targetTag, url: `https://github.com/${REPO}/releases/tag/${targetTag}`, published_at: "" }
-    : await latestRelease();
-  if (!targetTag && compareVersions(info.tag, currentVersion) <= 0) {
+  const tag = targetTag ? normalizeTag(targetTag) : "";
+  const info = tag
+    ? { tag, url: `https://github.com/${REPO}/releases/tag/${tag}`, published_at: "" }
+    : await (deps.latestRelease || latestRelease)();
+  if (!tag && compareVersions(info.tag, currentVersion) <= 0) {
     return { success: true, upgraded: false, current: currentVersion, latest: info.tag, message: "already up to date" };
+  }
+  if (!isValidTag(info.tag)) {
+    return { success: false, error: `latest release has an unexpected tag "${info.tag}"`, error_code: "operation_failed" };
   }
 
   const base = `https://github.com/${REPO}/releases/download/${info.tag}`;
   const assetName = `mail-use-${target}.tar.gz`;
   log(`downloading ${info.tag} (${assetName})`);
-  const tarball = await _get(`${base}/${assetName}`, { binary: true });
+  const tarball = await get(`${base}/${assetName}`, { binary: true });
 
-  // Verify against the published checksum. A mismatch means the bytes are not
-  // what was released — refuse rather than install them.
+  // The published checksum is required: a release without one is
+  // indistinguishable from bytes that were swapped, so we refuse unless the
+  // user explicitly accepts that with --insecure. A mismatch is always fatal.
   let checksumState = "missing";
+  let expected = "";
   try {
-    const sums = await _get(`${base}/${assetName}.sha256`);
-    const expected = String(sums).trim().split(/\s+/)[0];
+    const sums = await get(`${base}/${assetName}.sha256`);
+    expected = String(sums).trim().split(/\s+/)[0] || "";
+  } catch (e) {
+    if (!insecure) {
+      return {
+        success: false,
+        error: `no checksum published for ${assetName} (${(e && e.message) || e}); refusing to install unverified bytes (override with --insecure)`,
+        error_code: "operation_failed",
+      };
+    }
+  }
+  if (expected) {
+    if (!/^[0-9a-f]{64}$/i.test(expected)) {
+      return { success: false, error: `invalid checksum file for ${assetName}`, error_code: "operation_failed" };
+    }
     const actual = sha256(tarball);
-    if (expected && expected !== actual) {
+    if (expected.toLowerCase() !== actual) {
       return {
         success: false,
         error: `checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`,
         error_code: "operation_failed",
       };
     }
-    checksumState = expected ? "verified" : "missing";
-  } catch {
-    checksumState = "missing";
+    checksumState = "verified";
+  } else if (!insecure) {
+    return {
+      success: false,
+      error: `empty checksum for ${assetName}; refusing to install unverified bytes (override with --insecure)`,
+      error_code: "operation_failed",
+    };
+  } else {
+    log("WARNING: no checksum published; installing unverified (--insecure)");
   }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mail-use-upgrade-"));
+  const dest = bin.path;
+  const staged = path.join(path.dirname(dest), `.mail-use.upgrade.${process.pid}`);
   try {
     const tarPath = path.join(tmp, assetName);
     fs.writeFileSync(tarPath, tarball);
@@ -214,45 +263,56 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
       if (fs.existsSync(legacy)) extracted = legacy;
       else return { success: false, error: "archive did not contain a mail-use binary", error_code: "operation_failed" };
     }
-    fs.chmodSync(extracted, 0o755);
+    if (fs.lstatSync(extracted).isSymbolicLink() || !fs.statSync(extracted).isFile()) {
+      return { success: false, error: "archive's mail-use is not a regular file", error_code: "operation_failed" };
+    }
 
-    // Replace via rename within the same directory: rename is atomic, and on
-    // POSIX it is legal to replace a running executable's path — the old inode
-    // stays alive for already-running processes (notably the daemon, which we
-    // restart below).
-    const dest = bin.path;
-    const staged = path.join(path.dirname(dest), `.mail-use.upgrade.${process.pid}`);
+    // Stage next to the destination (same filesystem, so the final rename is
+    // atomic), then make the staged copy prove it runs before it replaces
+    // anything. Every failure up to the rename leaves the installed binary as
+    // it was; the finally below removes the staged file on every path.
     fs.copyFileSync(extracted, staged);
     fs.chmodSync(staged, 0o755);
-    fs.renameSync(staged, dest);
+    const v = verify(staged, info.tag);
+    if (!v.ok) return { success: false, error: v.error, error_code: "operation_failed" };
+    log(`verified ${info.tag}`);
+
+    // On POSIX it is legal to replace a running executable's path — the old
+    // inode stays alive for already-running processes (notably the daemon,
+    // which we restart below).
+    try {
+      fs.renameSync(staged, dest);
+    } catch (e) {
+      return {
+        success: false,
+        error: `could not replace ${dest} (${(e && e.message) || e}); the installed binary is unchanged`,
+        error_code: "operation_failed",
+      };
+    }
     log(`installed ${info.tag} to ${dest}`);
 
     // The daemon is still running the previous binary from its open inode, so
     // an upgrade that skips this leaves the old code serving every call.
     //
-    // Probe and restart are reported separately on purpose. Folding them into one
-    // try meant any failure — including a probe that raced the restart — came back
-    // as "not_running", which told the user the daemon was down when it was up and
-    // that nothing was restarted when it had been.
-    const daemon = { was_running: false, restarted: false, error: null };
-    daemon.was_running = await daemonResponds();
-    if (daemon.was_running) {
-      try {
-        // In-process, for the same reason the probe is: this must not spawn the
-        // binary we just replaced. installAutostart only shells out to
-        // launchctl/systemctl, which is fine.
-        const { installAutostart } = require("./daemon");
-        const r = await installAutostart({});
-        if (r && r.success === false) daemon.error = r.error || "reload failed";
-        // Confirm it actually came back rather than trusting the return value: a
-        // reload that unloads but fails to load would otherwise read as success.
-        daemon.restarted = await waitForDaemon(10_000);
-        if (!daemon.restarted && !daemon.error) daemon.error = "daemon did not come back after reload";
-      } catch (e) {
-        daemon.error = (e && e.message) || String(e);
-        // It may still have restarted despite the throw; report what is true.
-        daemon.restarted = await waitForDaemon(5_000);
-      }
+    // restartDaemon goes through launchd/systemd when they own the daemon and
+    // judges success by the pid changing; a hand-started daemon is stopped and
+    // reported as such rather than having a LaunchAgent installed behind the
+    // user's back. It runs in-process: it must not spawn the binary we just
+    // replaced (a pkg child inherits PKG_EXECPATH and is not the CLI).
+    let daemon;
+    try {
+      const r = await restart({});
+      daemon = {
+        was_running: Boolean(r.was_running),
+        restarted: Boolean(r.restarted),
+        method: r.method || "",
+        old_pid: r.old_pid != null ? r.old_pid : null,
+        new_pid: r.new_pid != null ? r.new_pid : null,
+        error: r.success ? null : (r.error || "restart failed"),
+        ...(r.hint ? { hint: r.hint } : {}),
+      };
+    } catch (e) {
+      daemon = { was_running: false, restarted: false, method: "", error: (e && e.message) || String(e) };
     }
 
     return {
@@ -266,8 +326,12 @@ async function performUpgrade({ currentVersion, targetTag = "", log = () => {} }
       release_url: info.url,
     };
   } finally {
+    try { fs.rmSync(staged, { force: true }); } catch { /* ignore */ }
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
-module.exports = { assetTarget, compareVersions, checkForUpdate, latestRelease, performUpgrade, resolveInstalledBinary };
+module.exports = {
+  assetTarget, compareVersions, checkForUpdate, latestRelease, performUpgrade, resolveInstalledBinary,
+  isValidTag, normalizeTag, childEnv, verifyBinary, sha256,
+};

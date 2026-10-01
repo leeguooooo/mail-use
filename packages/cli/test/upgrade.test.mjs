@@ -98,16 +98,19 @@ describe("upgrade daemon reporting", () => {
     expect(src).not.toMatch(/daemon = "not_running"/);
   });
 
-  it("confirms the daemon came back instead of trusting the reload's return value", async () => {
+  it("restarts through restartDaemon (pid-change verified), not by reinstalling the unit", async () => {
     const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
-    expect(src).toMatch(/waitForDaemon/);
-    // A reload that unloads but never loads must not read as success.
-    expect(src).toMatch(/did not come back after reload/);
+    expect(src).toMatch(/restartDaemon/);
+    // installAutostart rewrote the unit with the default interval and, on macOS,
+    // installed a LaunchAgent for daemons the user had started by hand.
+    expect(src).not.toMatch(/installAutostart/);
   });
 
   // A pkg binary cannot usefully spawn itself: pkg puts PKG_EXECPATH in the
   // environment, the child inherits it and stops behaving like the CLI. That is
   // why `was_running` was false on a machine where the daemon was plainly up.
+  // (The downloaded binary *is* run once, as a smoke test, with PKG_* stripped —
+  // that goes through verifyBinary's injectable exec, covered below.)
   it("never spawns its own binary — probes the socket and reloads in-process", () => {
     const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "upgrade.js"), "utf8");
     expect(src).not.toMatch(/execFileSync\(\s*dest/);

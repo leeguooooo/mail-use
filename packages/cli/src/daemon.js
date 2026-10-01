@@ -19,6 +19,7 @@ const path = require("path");
 
 const core = require("@mail-use/core");
 const { ImapPool } = require("@mail-use/core/src/services/imap_pool");
+const { getSocketPath, getPidFilePath } = require("./daemon_paths");
 const { digest, monitor, inbox, cleanup } = (() => {
   try { return require("@mail-use/workflows"); } catch { return {}; }
 })();
@@ -67,16 +68,6 @@ function _startUpdateChecks(ctx) {
   return { first, timer };
 }
 
-function getSocketPath() {
-  if (process.env.MAILBOX_DAEMON_SOCKET) return process.env.MAILBOX_DAEMON_SOCKET;
-  const base = process.env.XDG_RUNTIME_DIR || path.join(os.homedir(), ".cache", "mailbox");
-  return path.join(base, `daemon-${process.getuid ? process.getuid() : "x"}.sock`);
-}
-
-function getPidFilePath() {
-  return getSocketPath().replace(/\.sock$/, ".pid");
-}
-
 function _resolveFn(fnName) {
   const parts = String(fnName || "").split(".");
   if (parts.length !== 2) return null;
@@ -99,7 +90,14 @@ function _resolveFn(fnName) {
 // signature so the existing call site reads intentionally.
 async function startDaemon({ foreground: _foreground = true, log = console.error, syncIntervalMs = 0, syncAccountId = "" } = {}) {
   const sockPath = getSocketPath();
-  fs.mkdirSync(path.dirname(sockPath), { recursive: true });
+  // The socket gates access to every mailbox the daemon can reach, so its
+  // directory is owner-only. The default ~/.cache/mailbox may predate this
+  // (created 0755), so tighten it too; XDG_RUNTIME_DIR and an explicit
+  // MAILBOX_DAEMON_SOCKET are directories the user manages.
+  fs.mkdirSync(path.dirname(sockPath), { recursive: true, mode: 0o700 });
+  if (!process.env.MAILBOX_DAEMON_SOCKET && !process.env.XDG_RUNTIME_DIR) {
+    try { fs.chmodSync(path.dirname(sockPath), 0o700); } catch { /* best effort */ }
+  }
 
   // If another daemon owns the socket, refuse to clobber it.
   if (fs.existsSync(sockPath)) {
@@ -194,25 +192,49 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
     log(`[mail-use daemon] background sync every ${Math.round(syncIntervalMs / 1000)}s${syncAccountId ? ` (account ${syncAccountId})` : ""}`);
   }
 
-  const cleanup = async () => {
+  let shuttingDown = false;
+  const cleanup = async (exitCode = 0) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log(`[mail-use daemon] shutting down (pid=${process.pid})`);
     syncStopped = true;
     if (updateTimers) {
       clearTimeout(updateTimers.first);
       clearInterval(updateTimers.timer);
     }
-    try { await pool.closeAll(); } catch { /* ignore */ }
+    // Stop accepting and free the socket path first, so a replacement daemon
+    // can bind even while the IMAP logouts below are still in flight.
     try { server.close(); } catch { /* ignore */ }
     try { fs.unlinkSync(sockPath); } catch { /* ignore */ }
     try { fs.unlinkSync(getPidFilePath()); } catch { /* ignore */ }
-    process.exit(0);
+    // A wedged IMAP LOGOUT must not keep a stopped daemon alive: launchd and
+    // systemd would wait on it, and `daemon stop` would look like it hung.
+    await Promise.race([
+      Promise.resolve().then(() => pool.closeAll()).catch(() => {}),
+      new Promise((r) => { const t = setTimeout(r, SHUTDOWN_GRACE_MS); if (typeof t.unref === "function") t.unref(); }),
+    ]);
+    process.exit(exitCode);
   };
-  process.once("SIGINT", cleanup);
-  process.once("SIGTERM", cleanup);
+  process.once("SIGINT", () => cleanup(0));
+  process.once("SIGTERM", () => cleanup(0));
+  // A stray rejection in one RPC or sync pass is logged, not fatal: the daemon
+  // serves every other caller too. A synchronous throw that reached the top
+  // leaves state unknown, so log it and exit non-zero — the supervisor
+  // (Restart=on-failure / KeepAlive SuccessfulExit=false) starts a clean one.
+  process.on("unhandledRejection", (reason) => {
+    log(`[mail-use daemon] unhandled rejection: ${(reason && reason.stack) || reason}`);
+  });
+  process.on("uncaughtException", (err) => {
+    log(`[mail-use daemon] uncaught exception: ${(err && err.stack) || err}`);
+    cleanup(1);
+  });
 
   log(`[mail-use daemon] listening on ${sockPath} (pid=${process.pid})`);
   return { server, pool, sockPath, stats };
 }
+
+// How long shutdown waits for pooled IMAP connections to log out.
+const SHUTDOWN_GRACE_MS = Number(process.env.MAILBOX_DAEMON_SHUTDOWN_GRACE_MS || 3000);
 
 // Hard cap on a single JSON-RPC line, measured in bytes. 1 MiB is plenty
 // for any legitimate request (even RPC'd email bodies) and stops a
@@ -270,7 +292,11 @@ async function _dispatch(line, conn, ctx) {
     // Account credentials are read fresh from auth.json on each call, so a
     // reload mostly means: drop existing connections so the next acquire
     // picks up new creds.
-    await ctx.pool.closeAll();
+    // reset() drops idle connections but keeps the pool and its idle reaper
+    // alive; closeAll() is for final shutdown and stops the reaper for good.
+    // The fallback only covers a core that predates reset().
+    if (typeof ctx.pool.reset === "function") await ctx.pool.reset();
+    else await ctx.pool.closeAll();
     return _respond(conn, { id, ok: true, result: { reloaded: true } });
   }
   if (fnName === "__shutdown") {
@@ -338,15 +364,15 @@ function _resolveCliExecutable() {
   return { node: exe, script: "mail-use" };
 }
 
-function _autostartPaths() {
-  if (process.platform === "darwin") {
+function _autostartPaths(platform = process.platform) {
+  if (platform === "darwin") {
     return {
       kind: "launchd",
       unitPath: path.join(os.homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`),
       logPath: path.join(os.homedir(), "Library", "Logs", "mailbox-daemon.log"),
     };
   }
-  if (process.platform === "linux") {
+  if (platform === "linux") {
     const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
     return {
       kind: "systemd",
@@ -376,7 +402,10 @@ function _renderLaunchdPlist({ node, script, syncIntervalSec, logPath }) {
 ${argsXml}
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>StandardOutPath</key><string>${_xml(logPath)}</string>
   <key>StandardErrorPath</key><string>${_xml(logPath)}</string>
   <key>EnvironmentVariables</key>
@@ -405,7 +434,7 @@ After=network-online.target
 
 [Service]
 ExecStart=${cmdLine}
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]
@@ -413,11 +442,47 @@ WantedBy=default.target
 `;
 }
 
-async function installAutostart({ syncIntervalSec = 300 } = {}) {
-  const info = _autostartPaths();
+
+function _defaultExec(cmd, args) {
+  const { execFileSync } = require("child_process");
+  return execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 30_000 });
+}
+
+function _execError(e) {
+  const stderr = e && e.stderr ? String(e.stderr).trim() : "";
+  return stderr || (e && e.message) || String(e);
+}
+
+function _launchdDomain() {
+  return `gui/${process.getuid ? process.getuid() : 0}`;
+}
+
+// The --sync-interval baked into an installed unit, or null. Rewriting the unit
+// (re-install, upgrade) must keep what the user chose rather than snapping back
+// to the default.
+function _readInstalledSyncInterval(unitPath) {
+  let body;
+  try { body = fs.readFileSync(unitPath, "utf8"); } catch { return null; }
+  // launchd: <string>--sync-interval</string> <string>600</string>
+  // systemd: "--sync-interval" "600"
+  const m = body.match(/--sync-interval(?:<\/string>\s*<string>|"?\s+"?)(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+function _isUnitInstalled(info) {
+  return info.kind !== "unsupported" && Boolean(info.unitPath) && fs.existsSync(info.unitPath);
+}
+
+async function installAutostart({ syncIntervalSec, platform = process.platform, exec = _defaultExec } = {}) {
+  const info = _autostartPaths(platform);
   if (info.kind === "unsupported") {
-    return { success: false, error: `autostart not supported on platform ${process.platform}`, error_code: "unsupported" };
+    return { success: false, error: `autostart not supported on platform ${platform}`, error_code: "unsupported" };
   }
+  if (syncIntervalSec == null || !Number.isFinite(Number(syncIntervalSec))) {
+    const existing = _readInstalledSyncInterval(info.unitPath);
+    syncIntervalSec = existing != null ? existing : 300;
+  }
+  syncIntervalSec = Math.max(0, Number(syncIntervalSec));
   const { node, script } = _resolveCliExecutable();
   fs.mkdirSync(path.dirname(info.unitPath), { recursive: true });
 
@@ -428,14 +493,12 @@ async function installAutostart({ syncIntervalSec = 300 } = {}) {
     // Best-effort load. User may need to do it manually if SIP-locked.
     let activate = "";
     try {
-      const { execFileSync } = require("child_process");
-      execFileSync("launchctl", ["unload", info.unitPath], { stdio: "ignore" });
+      exec("launchctl", ["unload", info.unitPath]);
     } catch { /* not previously loaded — fine */ }
     try {
-      const { execFileSync } = require("child_process");
-      execFileSync("launchctl", ["load", "-w", info.unitPath], { stdio: "ignore" });
+      exec("launchctl", ["load", "-w", info.unitPath]);
       activate = `launchctl loaded — daemon will start now and at every login. Logs: ${info.logPath}`;
-    } catch (e) {
+    } catch {
       activate = `wrote plist; load it manually: launchctl load -w ${info.unitPath}`;
     }
     return { success: true, unit_path: info.unitPath, log_path: info.logPath, exe: (node ? `${node} ${script}` : script), sync_interval_sec: syncIntervalSec, activate_hint: activate };
@@ -444,11 +507,14 @@ async function installAutostart({ syncIntervalSec = 300 } = {}) {
   if (info.kind === "systemd") {
     const body = _renderSystemdUnit({ node, script, syncIntervalSec });
     fs.writeFileSync(info.unitPath, body, { mode: 0o644 });
-    let activate = `systemctl --user daemon-reload && systemctl --user enable --now ${SYSTEMD_UNIT}`;
+    let activate = `systemctl --user daemon-reload && systemctl --user enable ${SYSTEMD_UNIT} && systemctl --user restart ${SYSTEMD_UNIT}`;
     try {
-      const { execFileSync } = require("child_process");
-      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
-      execFileSync("systemctl", ["--user", "enable", "--now", SYSTEMD_UNIT], { stdio: "ignore" });
+      exec("systemctl", ["--user", "daemon-reload"]);
+      exec("systemctl", ["--user", "enable", SYSTEMD_UNIT]);
+      // restart, not `enable --now`: --now is a no-op for a unit that is already
+      // running, which would leave the old ExecStart (old interval, old binary)
+      // serving until the next login.
+      exec("systemctl", ["--user", "restart", SYSTEMD_UNIT]);
       activate = `systemd unit enabled and started`;
     } catch { /* leave activate as the manual instruction */ }
     return { success: true, unit_path: info.unitPath, exe: (node ? `${node} ${script}` : script), sync_interval_sec: syncIntervalSec, activate_hint: activate };
@@ -457,32 +523,161 @@ async function installAutostart({ syncIntervalSec = 300 } = {}) {
   return { success: false, error: "unknown autostart kind", error_code: "operation_failed" };
 }
 
-async function uninstallAutostart() {
-  const info = _autostartPaths();
+async function uninstallAutostart({ platform = process.platform, exec = _defaultExec } = {}) {
+  const info = _autostartPaths(platform);
   if (info.kind === "unsupported") {
-    return { success: false, error: `autostart not supported on platform ${process.platform}`, error_code: "unsupported" };
+    return { success: false, error: `autostart not supported on platform ${platform}`, error_code: "unsupported" };
   }
   if (!fs.existsSync(info.unitPath)) {
     return { success: true, unit_path: "" };
   }
   if (info.kind === "launchd") {
-    try {
-      const { execFileSync } = require("child_process");
-      execFileSync("launchctl", ["unload", info.unitPath], { stdio: "ignore" });
-    } catch { /* ignore */ }
+    try { exec("launchctl", ["unload", info.unitPath]); } catch { /* ignore */ }
   } else if (info.kind === "systemd") {
-    try {
-      const { execFileSync } = require("child_process");
-      execFileSync("systemctl", ["--user", "disable", "--now", SYSTEMD_UNIT], { stdio: "ignore" });
-    } catch { /* ignore */ }
+    try { exec("systemctl", ["--user", "disable", "--now", SYSTEMD_UNIT]); } catch { /* ignore */ }
   }
   try { fs.unlinkSync(info.unitPath); } catch { /* ignore */ }
   return { success: true, unit_path: info.unitPath };
 }
 
+function _defaultPing() {
+  const { daemonAdmin } = require("./daemon_admin");
+  return daemonAdmin("__ping", { timeoutMs: 1500 });
+}
+
+function _defaultShutdown() {
+  const { daemonAdmin } = require("./daemon_admin");
+  return daemonAdmin("__shutdown");
+}
+
+const _sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+// Restart the running daemon so it picks up a replaced binary.
+//
+// When launchd/systemd owns the daemon, ask *them* to restart it: a plain
+// __shutdown would either be undone by the supervisor at an unpredictable
+// moment or (with on-failure policies) not be undone at all. When the daemon
+// was started by hand there is no supervisor to bring it back, so we stop it
+// and say so — silently installing a LaunchAgent the user never asked for is
+// not a restart.
+//
+// Success is judged by the pid changing, not by the command's exit status: a
+// restart that leaves the old process answering has not happened.
+async function restartDaemon({
+  platform = process.platform,
+  exec = _defaultExec,
+  ping = _defaultPing,
+  shutdown = _defaultShutdown,
+  timeoutMs = 15_000,
+  pollMs = 300,
+} = {}) {
+  const info = _autostartPaths(platform);
+  const before = await ping();
+  const oldPid = before && before.success ? before.pid : null;
+  const out = { success: false, was_running: Boolean(oldPid), restarted: false, method: "", old_pid: oldPid, new_pid: null };
+
+  if (!_isUnitInstalled(info)) {
+    if (!oldPid) return { ...out, success: true, method: "none" };
+    const r = await shutdown();
+    return {
+      ...out,
+      success: Boolean(r && r.success),
+      method: "shutdown",
+      error: r && r.success ? undefined : (r && r.error) || "shutdown failed",
+      hint: "the daemon was started by hand, not by launchd/systemd, so nothing restarts it — run: mail-use daemon start",
+    };
+  }
+
+  try {
+    if (info.kind === "launchd") {
+      out.method = "launchctl kickstart";
+      try {
+        exec("launchctl", ["kickstart", "-k", `${_launchdDomain()}/${LAUNCHD_LABEL}`]);
+      } catch {
+        // Installed but not loaded (e.g. after `daemon stop`): load it.
+        out.method = "launchctl bootstrap";
+        exec("launchctl", ["bootstrap", _launchdDomain(), info.unitPath]);
+      }
+    } else {
+      out.method = "systemctl restart";
+      exec("systemctl", ["--user", "restart", SYSTEMD_UNIT]);
+    }
+  } catch (e) {
+    return { ...out, error: `${out.method} failed: ${_execError(e)}`, error_code: "operation_failed" };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await ping();
+    if (r && r.success && r.pid && r.pid !== oldPid) {
+      return { ...out, success: true, restarted: true, new_pid: r.pid };
+    }
+    if (Date.now() >= deadline) {
+      const still = r && r.success ? r.pid : null;
+      return {
+        ...out,
+        new_pid: still,
+        error: still && still === oldPid
+          ? `daemon pid ${oldPid} is still the one answering after ${out.method}`
+          : `daemon did not come back within ${Math.round(timeoutMs / 1000)}s after ${out.method}`,
+        error_code: "operation_failed",
+      };
+    }
+    await _sleep(pollMs);
+  }
+}
+
+// Stop the daemon and keep it stopped.
+//
+// Under launchd/systemd a bare __shutdown is not a stop: the supervisor
+// relaunches it (KeepAlive / Restart=). So when a unit is installed, stop it
+// through the supervisor; any daemon still answering after that was started
+// by hand and gets __shutdown.
+async function stopDaemon({
+  platform = process.platform,
+  exec = _defaultExec,
+  ping = _defaultPing,
+  shutdown = _defaultShutdown,
+} = {}) {
+  const info = _autostartPaths(platform);
+  const before = await ping();
+  const wasRunning = Boolean(before && before.success);
+  let method = "";
+  let hint;
+
+  if (_isUnitInstalled(info)) {
+    try {
+      if (info.kind === "launchd") {
+        exec("launchctl", ["bootout", `${_launchdDomain()}/${LAUNCHD_LABEL}`]);
+        method = "launchctl bootout";
+        hint = "unloaded until next login; start it again with: mail-use daemon install";
+      } else {
+        exec("systemctl", ["--user", "stop", SYSTEMD_UNIT]);
+        method = "systemctl stop";
+        hint = `stopped until next login; start it again with: systemctl --user start ${SYSTEMD_UNIT}`;
+      }
+    } catch {
+      // Not loaded / not active — fine, fall through to a direct shutdown.
+    }
+  }
+
+  const after = method ? await ping() : before;
+  if (after && after.success) {
+    const r = await shutdown();
+    if (!r || !r.success) return r || { success: false, error: "shutdown failed", error_code: "operation_failed" };
+    method = method ? `${method} + shutdown` : "shutdown";
+  } else if (!method) {
+    // Nothing supervised it and nothing answered.
+    return before && !before.success ? before : { success: false, error: "daemon is not running", error_code: "not_running" };
+  }
+
+  return { success: true, stopped: true, was_running: wasRunning, pid: wasRunning ? before.pid : null, method, ...(hint ? { hint } : {}) };
+}
+
 module.exports = {
   startDaemon, getSocketPath, getPidFilePath,
-  installAutostart, uninstallAutostart,
+  installAutostart, uninstallAutostart, restartDaemon, stopDaemon,
   // Exported for tests: the update check must stay disableable and unref'd.
   _updateCheckIntervalMs, _startUpdateChecks,
+  _renderLaunchdPlist, _renderSystemdUnit, _readInstalledSyncInterval, _autostartPaths,
 };
