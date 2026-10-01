@@ -13,7 +13,7 @@
 - Install dependencies: `pnpm install`
 - Run tests: `pnpm test`
 - Lint: `pnpm lint` (`pnpm lint:fix` to autofix). CI runs it before the tests.
-- Build local pkg binary into `dist/mail-use`: `pnpm build:binary`
+- Build the local single-executable binary (Node SEA, embeds the running node; Node >= 22) into `dist/mail-use`: `pnpm build:binary` (`--skip-install --skip-tests` skip the install/test preamble)
 - Run dev CLI: `pnpm -C packages/cli test` or `node packages/cli/bin/mail-use.js --help`
 
 ## Coding Style & Naming Conventions

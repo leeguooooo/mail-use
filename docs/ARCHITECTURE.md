@@ -17,6 +17,7 @@ Modules:
 
 Distribution:
 
-- The user-facing install is `mail-use` (npm launcher + platform packages).
-- The platform packages ship a prebuilt `mail-use` binary (built from Node via
-  `pkg`).
+- The user-facing install is a prebuilt `mail-use` binary attached to each GitHub
+  Release (`install.sh` / `mail-use upgrade`). There is no npm package.
+- The binary is a Node Single Executable Application: an esbuild CJS bundle injected
+  into the official node binary (see `docs/RELEASING.md`).
