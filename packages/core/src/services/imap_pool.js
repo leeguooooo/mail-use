@@ -22,6 +22,10 @@ const MAX_CLIENTS_PER_ACCOUNT = Math.max(1, Number(process.env.MAILBOX_POOL_MAX 
 const POOL_IDLE_MS = Math.max(0, Number(process.env.MAILBOX_POOL_IDLE_MS || 10 * 60 * 1000));
 const POOL_KEEP_WARM = Math.max(0, Number(process.env.MAILBOX_POOL_KEEP_WARM || 1));
 const REAP_SWEEP_MS = 60 * 1000;
+// Upper bound on a polite LOGOUT during shutdown/reload. A dead or wedged
+// server must not be able to hold the daemon open: past this we drop the
+// socket instead of waiting for the server to say goodbye.
+const LOGOUT_TIMEOUT_MS = 3 * 1000;
 
 function _allowInsecureTls() {
   return String(process.env.MAILBOX_ALLOW_INSECURE_TLS || "").trim() === "1";
@@ -30,7 +34,7 @@ function _allowInsecureTls() {
 function _buildClient(account) {
   const port = Number(account.imap.port);
   const secure = Boolean(account.imap.secure);
-  return new ImapFlow({
+  const client = new ImapFlow({
     host: account.imap.host,
     port,
     secure,
@@ -39,6 +43,45 @@ function _buildClient(account) {
     tls: { rejectUnauthorized: !_allowInsecureTls(), minVersion: "TLSv1.2" },
     logger: false,
   });
+  // ImapFlow is an EventEmitter and re-emits socket failures (ECONNRESET,
+  // TLS errors, server-side timeouts) as 'error'. With no listener Node turns
+  // that into an uncaught exception and the whole daemon dies because one
+  // account's socket hiccupped. Attach before connect() so a failure during
+  // the handshake is covered too. The entry-level listener in _build() does
+  // the bookkeeping; this one only guarantees the event is never unhandled.
+  client.on("error", (err) => {
+    process.stderr.write(`mail-use: imap connection error for ${account.email}: ${(err && err.message) || err}\n`);
+  });
+  return client;
+}
+
+// Close a client politely but bounded: LOGOUT if the server answers within
+// `ms`, otherwise tear the socket down. Never rejects.
+async function _logoutWithTimeout(client, ms = LOGOUT_TIMEOUT_MS) {
+  if (!client) return;
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+    if (timer && typeof timer.unref === "function") timer.unref();
+  });
+  try {
+    const r = await Promise.race([
+      Promise.resolve().then(() => client.logout()).then(() => "ok", () => "error"),
+      timeout,
+    ]);
+    if (r !== "ok") {
+      try { if (typeof client.close === "function") client.close(); } catch { /* ignore */ }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Connection-level failure messages: the socket is gone, the command never
+// got a reply. Only these are worth a retry on a fresh connection.
+function _isConnectionError(err) {
+  const msg = (err && err.message) || "";
+  return /usable|EPIPE|ECONNRESET|connection.*closed|not connected|socket.*closed/i.test(msg);
 }
 
 class AccountPool {
@@ -51,6 +94,14 @@ class AccountPool {
     // or a rebuild fails so the CLI doesn't hang forever.
     this.waiters = [];
     this.closed = false;
+    // Connections being built right now. They count against maxSize: the
+    // capacity check and the push happen on opposite sides of an `await`, so
+    // without this a burst of N concurrent acquires all saw "room" and opened
+    // N sockets regardless of maxSize.
+    this.pending = 0;
+    // Set by ImapPool.reset(): this pool has been detached (config reload).
+    // In-flight work finishes on its connection; nothing goes back to idle.
+    this.draining = false;
   }
 
   async acquire() {
@@ -65,9 +116,25 @@ class AccountPool {
     }
     // 2. Drop dead entries so we don't hit maxSize falsely.
     this.entries = this.entries.filter((e) => e.client && e.client.usable);
-    // 3. Build a new client if there's room.
-    if (this.entries.length < this.maxSize) {
-      const e = await this._build();
+    // 3. Build a new client if there's room. Reserve the slot synchronously.
+    if (this.entries.length + this.pending < this.maxSize) {
+      this.pending += 1;
+      let e;
+      try {
+        e = await this._build();
+      } catch (err) {
+        this.pending -= 1;
+        // The slot we reserved is free again; a waiter queued behind it would
+        // otherwise sit there until some unrelated release.
+        this._serveWaiter();
+        throw err;
+      }
+      this.pending -= 1;
+      if (this.closed) {
+        clearInterval(e.keepalive);
+        _logoutWithTimeout(e.client);
+        throw new Error(`pool for ${this.account.email} is closed`);
+      }
       e.inUse = true;
       e.lastUsed = Date.now();
       this.entries.push(e);
@@ -77,8 +144,36 @@ class AccountPool {
     return new Promise((resolve, reject) => { this.waiters.push({ resolve, reject }); });
   }
 
+  // Hand the first waiter a fresh acquire if there's capacity for it.
+  _serveWaiter() {
+    if (!this.waiters.length || this.closed) return;
+    const live = this.entries.filter((e) => e.client && e.client.usable).length;
+    if (live + this.pending >= this.maxSize) return;
+    const next = this.waiters.shift();
+    this.acquire().then(next.resolve, next.reject);
+  }
+
+  // Forget an entry and close its socket (bounded). Safe to call twice.
+  _discard(entry) {
+    clearInterval(entry.keepalive);
+    const c = entry.client;
+    entry.client = null;
+    const idx = this.entries.indexOf(entry);
+    if (idx >= 0) this.entries.splice(idx, 1);
+    if (c) _logoutWithTimeout(c);
+  }
+
   release(entry) {
     entry.inUse = false;
+    // A connection abandoned by a timed-out caller may still be mid-command;
+    // handing it to the next caller would interleave two conversations on
+    // one socket. Drop it.
+    if (entry.client && entry.client._mailUseAbandoned) this._discard(entry);
+    // Detached by reset(): serve whoever already queued here, then close.
+    if (this.draining && !this.waiters.length) {
+      this._discard(entry);
+      return;
+    }
     const next = this.waiters.shift();
     if (!next) return;
     // If the just-released client is still alive, hand it off directly.
@@ -119,24 +214,46 @@ class AccountPool {
       entry.client.noop().catch(() => {});
     }, KEEPALIVE_MS);
     if (typeof entry.keepalive.unref === "function") entry.keepalive.unref();
-    client.on("close", () => {
+    const forget = () => {
       clearInterval(entry.keepalive);
-      entry.client = null;
+      if (entry.client === client) entry.client = null;
       const idx = this.entries.indexOf(entry);
       if (idx >= 0) this.entries.splice(idx, 1);
+    };
+    client.on("close", forget);
+    // A socket error means this connection is done even if 'close' is slow to
+    // follow. Stop handing it out now; the in-flight caller (if any) gets the
+    // error from its pending command and withClient decides about a retry.
+    client.on("error", () => {
+      if (entry.client !== client) return;
+      forget();
+      try { if (typeof client.close === "function") client.close(); } catch { /* ignore */ }
     });
     return entry;
   }
 
+  // Detach for a config reload: close idle connections now, let in-use ones
+  // finish their call and close on release. Waiters already queued here are
+  // still served from this pool so nobody hangs across the reload.
+  drain() {
+    this.draining = true;
+    for (const e of [...this.entries]) {
+      if (!e.inUse) this._discard(e);
+    }
+  }
+
   async closeAll() {
     this.closed = true;
-    for (const e of this.entries) {
-      clearInterval(e.keepalive);
-      if (e.client) {
-        try { await e.client.logout(); } catch { /* ignore */ }
-      }
-    }
+    const entries = this.entries;
     this.entries = [];
+    // Parallel and bounded: one wedged server must not stall shutdown for
+    // every other account, nor for longer than LOGOUT_TIMEOUT_MS.
+    await Promise.all(entries.map((e) => {
+      clearInterval(e.keepalive);
+      const c = e.client;
+      e.client = null;
+      return _logoutWithTimeout(c);
+    }));
     // Reject any pending waiters with a clear error so they don't hang.
     while (this.waiters.length) {
       const w = this.waiters.shift();
@@ -156,15 +273,8 @@ class AccountPool {
       .sort((a, b) => (a.lastUsed || 0) - (b.lastUsed || 0));
     const droppable = Math.max(0, live.length - keepWarm);
     const victims = idle.slice(0, droppable);
-    for (const e of victims) {
-      clearInterval(e.keepalive);
-      const c = e.client;
-      e.client = null;
-      const idx = this.entries.indexOf(e);
-      if (idx >= 0) this.entries.splice(idx, 1);
-      // Fire-and-forget: a failed logout on an already-dead socket is fine.
-      try { if (c) Promise.resolve(c.logout()).catch(() => {}); } catch { /* ignore */ }
-    }
+    // Fire-and-forget: a failed logout on an already-dead socket is fine.
+    for (const e of victims) this._discard(e);
     return victims.length;
   }
 
@@ -172,6 +282,7 @@ class AccountPool {
     return {
       account_id: this.account.id,
       clients: this.entries.length,
+      pending: this.pending,
       max_clients: this.maxSize,
       in_use: this.entries.filter((e) => e.inUse).length,
       waiters: this.waiters.length,
@@ -214,39 +325,56 @@ class ImapPool {
 
   // Run fn(client) with a guaranteed-live client. Multiple concurrent
   // calls on the same account run in parallel on separate clients (up to
-  // maxPerAccount). One automatic retry on connection-level errors.
-  async withClient(account, fn) {
+  // maxPerAccount).
+  //
+  // On a connection-level error the broken client is always dropped, but fn
+  // is re-run on a fresh one only when the caller declares it idempotent
+  // ({ idempotent: true }). A MOVE or EXPUNGE whose reply was lost may well
+  // have happened server-side; running it again is not a "retry", it is a
+  // second, different operation. Reads opt in; mutations surface the error.
+  async withClient(account, fn, { idempotent = false } = {}) {
     const pool = this._poolFor(account);
     let entry = await pool.acquire();
     try {
       try {
         return await fn(entry.client);
       } catch (err) {
-        const msg = (err && err.message) || "";
-        if (/usable|EPIPE|ECONNRESET|connection.*closed|not connected|socket.*closed/i.test(msg)) {
-          // Drop the broken client and retry once with a fresh one.
-          try { if (entry.client) await entry.client.logout(); } catch { /* ignore */ }
-          entry.client = null;
-          pool.release(entry); // remove dead entry from inUse accounting
-          entry = await pool.acquire();
-          return await fn(entry.client);
-        }
-        throw err;
+        if (!_isConnectionError(err)) throw err;
+        // An abandoned client was closed on purpose by a timed-out caller;
+        // nobody is waiting for a second attempt.
+        const abandoned = Boolean(entry.client && entry.client._mailUseAbandoned);
+        // Drop the broken client before anyone else can be handed it.
+        pool._discard(entry);
+        if (!idempotent || abandoned) throw err;
+        pool.release(entry); // remove dead entry from inUse accounting
+        entry = await pool.acquire();
+        return await fn(entry.client);
       }
     } finally {
       pool.release(entry);
     }
   }
 
+  // Config reload: forget every account pool so the next call builds
+  // connections from the freshly loaded account settings. Idle connections
+  // are closed now; in-use ones finish their current call and are closed on
+  // release instead of going back to idle. The reaper keeps running — unlike
+  // closeAll(), the pool stays usable afterwards.
+  reset() {
+    for (const p of this._pools.values()) p.drain();
+    this._pools.clear();
+  }
+
+  // Final shutdown. Stops the reaper and logs every connection out in
+  // parallel, each bounded by LOGOUT_TIMEOUT_MS.
   async closeAll() {
     if (this._sweep) {
       clearInterval(this._sweep);
       this._sweep = null;
     }
-    for (const p of this._pools.values()) {
-      await p.closeAll();
-    }
+    const pools = [...this._pools.values()];
     this._pools.clear();
+    await Promise.all(pools.map((p) => p.closeAll()));
   }
 
   stats() {
@@ -254,4 +382,14 @@ class ImapPool {
   }
 }
 
-module.exports = { ImapPool };
+// Give up on a client whose caller has stopped waiting (e.g. a search that hit
+// its wall-clock deadline). Closing the socket makes the orphaned command fail
+// fast instead of scanning on in the background, and the mark tells the pool
+// not to hand this connection to anyone else or re-run the work.
+function abandonClient(client) {
+  if (!client) return;
+  try { client._mailUseAbandoned = true; } catch { /* ignore */ }
+  try { if (typeof client.close === "function") client.close(); } catch { /* ignore */ }
+}
+
+module.exports = { ImapPool, abandonClient, _buildClient, _logoutWithTimeout, _isConnectionError };

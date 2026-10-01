@@ -13,14 +13,16 @@ let _GLOBAL_POOL = null;
 function setGlobalPool(pool) { _GLOBAL_POOL = pool; }
 function getGlobalPool() { return _GLOBAL_POOL; }
 
-async function withImapClient(account, fn) {
+// opts.idempotent: the pool may re-run fn on a fresh connection after a
+// connection-level failure. Only reads should set it — see ImapPool.withClient.
+async function withImapClient(account, fn, opts = {}) {
   if (_isTestMode()) {
     const { createMockImapClient } = require("../testing/mock_imap_client");
     const client = createMockImapClient(account);
     return fn(client);
   }
   if (_GLOBAL_POOL) {
-    return _GLOBAL_POOL.withClient(account, fn);
+    return _GLOBAL_POOL.withClient(account, fn, opts);
   }
 
   const { ImapFlow } = require("imapflow");
@@ -42,6 +44,11 @@ async function withImapClient(account, fn) {
     },
     tls,
     logger: false,
+  });
+  // Without a listener a socket 'error' is an uncaught exception that takes
+  // the process down; the failing command rejects on its own anyway.
+  client.on("error", (err) => {
+    if (process.env.MAILBOX_DEBUG) process.stderr.write(`mail-use: imap connection error for ${account.email}: ${(err && err.message) || err}\n`);
   });
 
   await client.connect();
@@ -87,10 +94,18 @@ async function testConnection(account, folder) {
     } finally {
       if (lock && typeof lock.release === "function") lock.release();
     }
-  });
+  }, { idempotent: true });
+}
+
+// Close a client whose caller gave up on it (deadline hit). Lives in
+// imap_pool.js because the pool is what must not reuse or retry it; for a
+// one-shot connection it simply ends the orphaned scan early.
+function abandonClient(client) {
+  return require("./imap_pool").abandonClient(client);
 }
 
 module.exports = {
+  abandonClient,
   withImapClient,
   testConnection,
   setGlobalPool,
