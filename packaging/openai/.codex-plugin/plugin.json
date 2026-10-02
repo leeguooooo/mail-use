@@ -1,0 +1,61 @@
+{
+  "name": "mail-use",
+  "version": "1.0.0",
+  "description": "Read, search, send and organize email in Gmail, Outlook, QQ, 163 and any IMAP/SMTP account through the mail-use CLI on your computer.",
+  "author": {
+    "name": "Guo Li",
+    "email": "leeguooooo@gmail.com",
+    "url": "https://github.com/leeguooooo"
+  },
+  "homepage": "https://github.com/leeguooooo/mail-use",
+  "repository": "https://github.com/leeguooooo/mail-use",
+  "license": "MIT",
+  "keywords": [
+    "email",
+    "imap",
+    "smtp",
+    "gmail",
+    "outlook",
+    "inbox"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "mail-use",
+    "shortDescription": "Email from any IMAP account",
+    "longDescription": "mail-use lets the assistant work with all of your mailboxes at once — Gmail, Outlook, QQ Mail, 163 and any other IMAP/SMTP account — through the open-source mail-use command-line tool running on your computer.\n\nAsk it to show unread mail across every account, find an order confirmation or a customer reply, read a thread, draft and send a reply, or file, mark and archive messages. It can also propose an inbox cleanup that sorts mail into protected categories (finance, travel, security, support) and cleanup candidates (marketing, routine notifications), and acts only on the categories you approve.\n\nSafety: every command that changes a mailbox — sending, deleting, moving, marking — returns a preview first and runs only after you approve it. Credentials stay in a config file on your computer and are never shown in the conversation.\n\nRequirements and limits: install the mail-use CLI on your computer (instructions at github.com/leeguooooo/mail-use) and add your accounts to its local config; providers such as Gmail and QQ need an app password. Your assistant uses it on a connected computer where mail-use is installed. On QQ, 163 and Outlook, keyword search matches only subject and sender because those servers do not support full-text IMAP search. mail-use has no server; it connects only to your own mail providers.",
+    "developerName": "Guo Li",
+    "category": "Productivity",
+    "capabilities": [
+      "List and search email",
+      "Read email",
+      "Send email",
+      "Mark, flag and move email",
+      "Delete email",
+      "Plan inbox cleanup"
+    ],
+    "websiteURL": "https://github.com/leeguooooo/mail-use",
+    "supportURL": "https://github.com/leeguooooo/mail-use/issues",
+    "privacyPolicyURL": "https://github.com/leeguooooo/mail-use/blob/main/PRIVACY.md",
+    "defaultPrompt": [
+      "Show my unread email from the last 3 days across all accounts.",
+      "Find the latest invoice email and summarize it.",
+      "Plan a cleanup of marketing emails in my inbox."
+    ],
+    "brandColor": "#2453B8",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  },
+  "extensions": {
+    "com.openai": {
+      "publication": {
+        "release_notes": "First directory release: skill for reading, searching, sending and organizing email through the mail-use CLI, with dry-run previews before any change.",
+        "translations": {
+          "zh-CN": {
+            "subtitle": "一次管好所有 IMAP 邮箱",
+            "description": "mail-use 让助手通过你电脑上的开源 mail-use 命令行，同时处理 Gmail、Outlook、QQ 邮箱、163 及任意 IMAP/SMTP 邮箱：查看所有账号的未读、找订单确认或客户回复、读邮件、起草并发送回复、归档和标记，以及按类别整理收件箱（财务、出行、安全、客服类受保护，营销和例行通知作为清理候选）。发送、删除、移动、标记都会先给预览，你确认后才执行。凭据只存在你电脑上的配置文件里，不会出现在对话中。需要先在电脑上安装 mail-use 并配置账号；Gmail、QQ 等需要应用专用密码。mail-use 没有服务器，只连接你自己的邮件服务商。"
+          }
+        }
+      }
+    }
+  }
+}
