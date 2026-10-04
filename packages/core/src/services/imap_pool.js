@@ -62,11 +62,21 @@ async function _logoutWithTimeout(client, ms = LOGOUT_TIMEOUT_MS) {
   }
 }
 
-// Connection-level failure messages: the socket is gone, the command never
-// got a reply. Only these are worth a retry on a fresh connection.
-function _isConnectionError(err) {
+// Connection-level failures: the socket is gone, the command never got a
+// reply. Only these are worth a retry on a fresh connection.
+//
+// The message list is what ImapFlow actually raises once a connection has died
+// under a command (seen in real daemon logs): "Socket timeout" (ETIMEOUT),
+// "Connection not available" (NoConnection), "Already logged out",
+// "Unexpected close". Independent of wording, a client that stopped being
+// usable while running the command is dead too — that also covers internal
+// TypeErrors from a torn-down socket ("Cannot read properties of null").
+const CONNECTION_ERROR_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEOUT", "ETIMEDOUT", "NoConnection", "ClosedAfterConnectTLS", "ClosedAfterConnectText"]);
+function _isConnectionError(err, client) {
+  if (client && client.usable === false) return true;
+  if (err && CONNECTION_ERROR_CODES.has(err.code)) return true;
   const msg = (err && err.message) || "";
-  return /usable|EPIPE|ECONNRESET|connection.*closed|not connected|socket.*closed/i.test(msg);
+  return /usable|EPIPE|ECONNRESET|connection.*closed|not connected|socket.*closed|socket timeout|connection not available|already logged out|unexpected close/i.test(msg);
 }
 
 class AccountPool {
@@ -193,6 +203,12 @@ class AccountPool {
     } finally {
       clearTimeout(timeoutId);
     }
+    return this._wire(client);
+  }
+
+  // Wrap a connected client in a pool entry: keepalive NOOPs plus eviction on
+  // 'close' / 'error'. Split from _build() so tests can drive it with a fake.
+  _wire(client) {
     const entry = { client, inUse: false, lastUsed: Date.now() };
     entry.keepalive = setInterval(() => {
       if (!entry.client || !entry.client.usable) return;
@@ -321,13 +337,16 @@ class ImapPool {
     const pool = this._poolFor(account);
     let entry = await pool.acquire();
     try {
+      // Held separately: an 'error' event during fn evicts the entry and
+      // nulls entry.client, but we still need to ask this client if it died.
+      const client = entry.client;
       try {
-        return await fn(entry.client);
+        return await fn(client);
       } catch (err) {
-        if (!_isConnectionError(err)) throw err;
+        if (!_isConnectionError(err, client)) throw err;
         // An abandoned client was closed on purpose by a timed-out caller;
         // nobody is waiting for a second attempt.
-        const abandoned = Boolean(entry.client && entry.client._mailUseAbandoned);
+        const abandoned = Boolean(client && client._mailUseAbandoned);
         // Drop the broken client before anyone else can be handed it.
         pool._discard(entry);
         if (!idempotent || abandoned) throw err;
