@@ -170,6 +170,14 @@ mail-use email delete <gid> --confirm --json        # default moves to Trash; pa
 mail-use email flag <gid> --set --confirm --json
 mail-use email move <gid1> <gid2> --target-folder Archive --confirm --json
 mail-use email send --to a@b.com --subject hi --body "..." --confirm --json
+# Multi-line body: pipe it on stdin (shell quotes do NOT turn "\n" into a newline).
+# A one-line --body with literal \n is auto-converted to line breaks (+ a warning);
+# --literal-body opts out.
+mail-use email send --to a@b.com --subject hi --body-file - --confirm --json <<'BODY'
+Hello,
+
+Thanks!
+BODY
 
 # Filtered batch mark/delete by sender/subject (no need to list+collect ids first):
 mail-use email delete --from newsletter@shop.com --confirm --json

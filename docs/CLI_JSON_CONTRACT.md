@@ -261,6 +261,17 @@ Batch or single:
 ```
 
 ### email send / reply / forward
+Body input:
+- `--body-file <path>` (send/reply) reads the body from a file; `--body-file -`
+  reads stdin. This is the robust way to pass multi-line text.
+- An inline `--body` (send/reply/forward) that contains literal `\n` (backslash +
+  n, which shell quotes do not expand) and **no** real line break is sent with
+  `\n` / `\r\n` turned into line breaks, and the result (dry-run and sent)
+  carries `warnings: ["--body had literal \\n sequences ..."]`. `--literal-body`
+  sends the value as typed. A body that already has real newlines, an escaped
+  `\\n`, and `--body-file` input are never rewritten. MCP `email_send` takes a
+  JSON string and sends it byte-for-byte.
+
 Default dry-run for send:
 ```json
 {

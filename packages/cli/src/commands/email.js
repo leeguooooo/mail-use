@@ -6,6 +6,7 @@ const { _out, _printEmailList, _printFolderList } = require("../cli/render");
 const {
   _validatePaging, _validateDateOpt, _readBodyFile, _collectOption, _resolveLocalAttachments,
   _attachmentPreview, _mailAttachments, _explicitOptionValue,
+  _decodeInlineBody, BODY_UNESCAPED_WARNING,
 } = require("../cli/options");
 const targets = require("../cli/targets");
 
@@ -34,6 +35,23 @@ function _markConfirmationRequired(result, opts, dryRun, hint = targets.CONFIRM_
   }
 }
 
+// Inline --body as typed on a shell: literal "\n" with no real line break is
+// decoded to newlines unless --literal-body (see _decodeInlineBody). Returns
+// { body, warnings }.
+function _inlineBody(opts) {
+  const raw = opts.body || "";
+  if (opts.literalBody) return { body: raw, warnings: [] };
+  const d = _decodeInlineBody(raw);
+  return { body: d.body, warnings: d.unescaped ? [BODY_UNESCAPED_WARNING] : [] };
+}
+
+function _withWarnings(result, warnings) {
+  if (warnings.length && result && typeof result === "object") {
+    result.warnings = [...(Array.isArray(result.warnings) ? result.warnings : []), ...warnings];
+  }
+  return result;
+}
+
 // --body / --body-file / --attachment for send and reply. Exits on bad usage.
 function _readComposeInput(ctx, opts) {
   const hasBody = typeof opts.body === "string" && opts.body.length;
@@ -42,8 +60,9 @@ function _readComposeInput(ctx, opts) {
     ctx.usage("Specify exactly one of --body/--body-file");
   }
 
-  let body = opts.body || "";
+  let { body, warnings } = _inlineBody(opts);
   if (opts.bodyFile) {
+    warnings = [];
     try {
       body = _readBodyFile(opts.bodyFile);
     } catch (e) {
@@ -56,7 +75,7 @@ function _readComposeInput(ctx, opts) {
   } catch (e) {
     ctx.usage(e && e.message ? e.message : "Failed to read attachment");
   }
-  return { body, attachments };
+  return { body, attachments, warnings };
 }
 
 // --date-from / --date-to validation + relative-shortcut expansion.
@@ -111,6 +130,10 @@ async function _mutate(ctx, { operation, label, ids, opts, markAs }) {
   _markConfirmationRequired(result, opts, dryRun);
   return ctx.respond(result, label);
 }
+
+const BODY_HELP = "Body text. A one-line value with literal \\n (shell quotes do not expand it) is sent with real line breaks";
+const BODY_FILE_HELP = "Read the body from a file, or '-' for stdin (preferred for multi-line text)";
+const LITERAL_BODY_HELP = "Send --body exactly as given (do not turn literal \\n into line breaks)";
 
 function register(program, ctx) {
   const { email } = ctx.proxies;
@@ -367,8 +390,9 @@ function register(program, ctx) {
     .description("Send an email")
     .requiredOption("--to <to...>")
     .requiredOption("--subject <s>")
-    .option("--body <text>")
-    .option("--body-file <path>")
+    .option("--body <text>", BODY_HELP)
+    .option("--body-file <path>", BODY_FILE_HELP)
+    .option("--literal-body", LITERAL_BODY_HELP)
     .option("--cc <cc...>")
     .option("--bcc <bcc...>")
     .option("--attachment <path>", "Attach a local file; repeat for multiple files", _collectOption, [])
@@ -377,7 +401,7 @@ function register(program, ctx) {
     .option("--confirm", "Actually send (default: dry-run)")
     .option("--dry-run")
     .action(async (opts) => {
-      const { body, attachments } = _readComposeInput(ctx, opts);
+      const { body, attachments, warnings } = _readComposeInput(ctx, opts);
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       if (dryRun) {
         const result = {
@@ -398,7 +422,7 @@ function register(program, ctx) {
           confirmation_required: true,
           confirmation_hint: "Re-run with --confirm to actually send",
         };
-        ctx.respond(result, "email send");
+        ctx.respond(_withWarnings(result, warnings), "email send");
       }
       const result = await email.sendEmail({
         to: opts.to,
@@ -410,15 +434,16 @@ function register(program, ctx) {
         is_html: Boolean(opts.isHtml),
         attachments: _mailAttachments(attachments),
       });
-      ctx.respond(result, "email send");
+      ctx.respond(_withWarnings(result, warnings), "email send");
     });
 
   emailCmd
     .command("reply")
     .description("Reply to an email")
     .argument("<email_id>")
-    .option("--body <text>")
-    .option("--body-file <path>")
+    .option("--body <text>", BODY_HELP)
+    .option("--body-file <path>", BODY_FILE_HELP)
+    .option("--literal-body", LITERAL_BODY_HELP)
     .option("--reply-all")
     .option("--folder <name>", "Folder", "INBOX")
     .option("--attachment <path>", "Attach a local file; repeat for multiple files", _collectOption, [])
@@ -427,7 +452,7 @@ function register(program, ctx) {
     .option("--confirm", "Actually send (default: dry-run)")
     .option("--dry-run")
     .action(async (emailId, opts, cmd) => {
-      const { body, attachments } = _readComposeInput(ctx, opts);
+      const { body, attachments, warnings } = _readComposeInput(ctx, opts);
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const ref = targets.parseEmailRef(emailId);
       const explicitFolder = _explicitOptionValue(cmd, opts, "folder");
@@ -441,7 +466,7 @@ function register(program, ctx) {
         attachments: _mailAttachments(attachments),
         dry_run: dryRun,
       });
-      ctx.respond(result, "email reply");
+      ctx.respond(_withWarnings(result, warnings), "email reply");
     });
 
   emailCmd
@@ -449,7 +474,8 @@ function register(program, ctx) {
     .description("Forward an email")
     .argument("<email_id>")
     .requiredOption("--to <to...>")
-    .option("--body <text>")
+    .option("--body <text>", BODY_HELP)
+    .option("--literal-body", LITERAL_BODY_HELP)
     .option("--folder <name>", "Folder", "INBOX")
     .option("--no-attachments")
     .option("--account-id <id>")
@@ -459,16 +485,17 @@ function register(program, ctx) {
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const ref = targets.parseEmailRef(emailId);
       const explicitFolder = _explicitOptionValue(cmd, opts, "folder");
+      const { body, warnings } = _inlineBody(opts);
       const result = await email.forwardEmail({
         email_id: ref.id,
         to: opts.to,
-        body: opts.body || "",
+        body,
         folder: explicitFolder || ref.folder || opts.folder,
         no_attachments: Boolean(opts.noAttachments),
         account_id: opts.accountId || ref.account_id || "",
         dry_run: dryRun,
       });
-      ctx.respond(result, "email forward");
+      ctx.respond(_withWarnings(result, warnings), "email forward");
     });
 
   emailCmd
