@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const { _newSyncStats, _recordSyncResult } = require("../src/daemon.js");
+const { _syncAccountLines } = require("../src/commands/daemon.js");
 
 // `daemon status` once reported syncs_failed=159 next to last_sync_error=null:
 // every successful pass wiped the error, so the cause was never visible.
@@ -50,5 +51,19 @@ describe("daemon background sync stats", () => {
     const stats = _newSyncStats();
     expect(_recordSyncResult(stats, { result: { success: false } })).toBe("sync failed");
     expect(stats.last_sync_error).toBe("sync failed");
+  });
+});
+
+describe("daemon status: per-account sync lines", () => {
+  it("lists accounts that have only succeeded, not just failed ones", () => {
+    const lines = _syncAccountLines({
+      qq: { last_error: null, last_error_at: null, last_ok_at: "2026-10-04T00:00:00.000Z" },
+      gmail: { last_error: "Socket timeout", last_error_at: "2026-10-04T00:01:00.000Z", last_ok_at: null },
+      idle: { last_error: null, last_error_at: null, last_ok_at: null },
+    });
+    expect(lines).toEqual([
+      "  qq: last_ok_at=2026-10-04T00:00:00.000Z\n",
+      "  gmail: last_error=Socket timeout (at 2026-10-04T00:01:00.000Z)\n",
+    ]);
   });
 });

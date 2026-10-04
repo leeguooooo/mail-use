@@ -16,7 +16,7 @@ function cliBin() {
 function setup(name) {
   const root = path.join(import.meta.dirname, ".tmp", name);
   fs.rmSync(root, { recursive: true, force: true });
-  const env = testEnv(root);
+  const env = { ...testEnv(root), MAILBOX_TEST_MODE: "1" };
   writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
   return env;
 }
@@ -71,6 +71,13 @@ describe("email send/reply/forward: literal \\n from shell args", () => {
     expect(r.exitCode).toBe(0);
     expect(r.payload.would_send.body_preview).toBe(body);
     expect(r.payload.warnings).toBeUndefined();
+  });
+
+  it("send --body-file - stops reading stdin at the size limit", async () => {
+    const env = { ...setup("send_body_stdin_limit"), MAILBOX_MAX_BODY_FILE_BYTES: "1024" };
+    const r = await execa("node", [cliBin(), "email", "send", "--to", "p@example.com", "--subject", "Hi", "--body-file", "-", "--json"], { reject: false, env, input: "x".repeat(4096) });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stdout + r.stderr).toMatch(/--body-file exceeds 1024 bytes/);
   });
 
   it("send --body-file keeps a file's literal \\n (only inline --body is decoded)", async () => {

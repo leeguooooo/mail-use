@@ -171,4 +171,32 @@ describe("cleanup: scan limit is surfaced", () => {
     expect(p.truncated).toBe(false);
     expect(p).not.toHaveProperty("scan_note");
   });
+
+  it("unread-only: truncated compares against the unread count, not the folder size", async () => {
+    const root = tmpRoot("cleanup_scan_unread");
+    fs.rmSync(root, { recursive: true, force: true });
+    const env = testEnv(root);
+    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
+
+    // The mock INBOX holds 3 emails, 1 of them unread.
+    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--unread-only", "--limit", "1", "--json"], { reject: false, env });
+    const p = JSON.parse(r.stdout);
+    expect(p.scanned).toBe(1);
+    expect(p.total_in_folder).toBe(3);
+    expect(p.truncated).toBe(false);
+    expect(p).not.toHaveProperty("scan_note");
+  });
+
+  it("--confirm keeps total_in_folder in the applied plan", async () => {
+    const root = tmpRoot("cleanup_apply_total");
+    fs.rmSync(root, { recursive: true, force: true });
+    const env = testEnv(root);
+    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
+
+    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--limit", "2", "--confirm", "--json"], { reject: false, env });
+    const p = JSON.parse(r.stdout);
+    expect(p.applied).toBe(true);
+    expect(p.plan.total_in_folder).toBe(3);
+    expect(p.plan.truncated).toBe(true);
+  });
 });

@@ -66,7 +66,13 @@ async function plan({ account_id = "", folder = "INBOX", limit = 200, unread_onl
   // holds more, instead of letting `scanned` read like "the whole folder".
   const scanLimit = Number(limit || 200);
   const total = Number.isFinite(Number(list.total_in_folder)) ? Number(list.total_in_folder) : null;
-  const truncated = emails.length >= scanLimit && (total == null || total > emails.length);
+  // An unread-only scan is bounded by the unread count, not the folder size:
+  // read mail would otherwise flag a scan that classified every unread email.
+  const unreadTotal = !list.unread_count_unavailable && list.unread_count != null && Number.isFinite(Number(list.unread_count))
+    ? Number(list.unread_count)
+    : null;
+  const scopeTotal = unread_only ? unreadTotal : total;
+  const truncated = emails.length >= scanLimit && (scopeTotal == null || scopeTotal > emails.length);
 
   return {
     success: true,
@@ -76,7 +82,7 @@ async function plan({ account_id = "", folder = "INBOX", limit = 200, unread_onl
     ...(total != null ? { total_in_folder: total } : {}),
     truncated,
     ...(truncated
-      ? { scan_note: `Classified only the newest ${emails.length}${total != null ? ` of ${total}` : ""} emails (scan limit ${scanLimit}); pass --limit (MCP: limit) to scan more.` }
+      ? { scan_note: `Classified only the newest ${emails.length}${scopeTotal != null ? ` of ${scopeTotal}${unread_only ? " unread" : ""}` : ""} emails (scan limit ${scanLimit}); pass --limit (MCP: limit) to scan more.` }
       : {}),
     folder,
     account_id,
@@ -138,6 +144,7 @@ async function apply({
     plan: {
       scanned: p.scanned,
       scan_limit: p.scan_limit,
+      ...(p.total_in_folder != null ? { total_in_folder: p.total_in_folder } : {}),
       truncated: p.truncated,
       ...(p.scan_note ? { scan_note: p.scan_note } : {}),
       by_category: p.by_category,

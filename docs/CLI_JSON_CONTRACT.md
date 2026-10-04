@@ -118,13 +118,18 @@ Notes:
     cached, `false` when the server folder holds more than the cache, `null`
     when there is no folder snapshot. `cache_covers_from` (`YYYY-MM-DD HH:MM:SS`,
     or `null` when complete/unknown/empty) is the date from which the partial
-    cache is known to be complete.
-  - Coverage self-heal: a thin cached read whose window reaches earlier than
-    `cache_covers_from` (or has no `--since`/`--date-from`, e.g. paging past
-    the cached rows with `--offset`) on a partial cache auto-falls back to live
-    IMAP **however fresh the cache is**. Unread-only reads stay on the cache
-    when every unread message is cached. A full page stays on the cache (rows
-    are newest-first, so it lies inside the covered range).
+    cache is known to be complete. The cache window is by UID while pages sort
+    by date, so this is derived conservatively: the date of the lowest-UID
+    cached message (uncached mail has lower UIDs, so arrived no later), never
+    earlier than the oldest cached date.
+  - Coverage self-heal: on a partial cache, a cached page is served only when
+    what it answers lies inside the covered range — the `--since`/`--date-from`
+    window starts at or after `cache_covers_from`, or the page is **full** and
+    its oldest row is at or after `cache_covers_from` (the common "newest N"
+    read). Otherwise (a thin page with no or an earlier window, `--offset`
+    paging past the cached rows, a full page reaching below the boundary) it
+    auto-falls back to live IMAP **however fresh the cache is**. Unread-only
+    reads stay on the cache when every unread message is cached.
     `MAILBOX_CACHE_FRESH_SECONDS=0` disables this fallback too.
 
 ### email search
@@ -172,11 +177,16 @@ Notes:
 - `--folder all` returns **one row per message**. Gmail exposes labels as folders,
   so the same message is listed under INBOX, `[Gmail]/Important`, Starred and
   every user label; rows are collapsed per account by the server email id
-  (Gmail `X-GM-MSGID` / RFC 8474 `EMAILID`), else `Message-ID`, else
-  from+date+subject. The surviving row is the most canonical folder: INBOX, then
+  (Gmail `X-GM-MSGID` / RFC 8474 `EMAILID`), else `Message-ID`. Rows with
+  neither are never merged (sender+date+subject is too weak an identity). The
+  surviving row is the most canonical folder: INBOX, then
   user folders/labels, then Archive/Sent/Drafts/Junk/Trash, then Important /
-  Starred / All Mail. Dedupe happens before `limit`/`offset`, and `total_found`
-  excludes the collapsed rows. `duplicates_removed` (only when > 0) counts them.
+  Starred / All Mail. Dedupe happens before `limit`/`offset` (folders are
+  re-fetched with a larger cap when aliases would leave the page short), and
+  `total_found` excludes the collapsed rows. `duplicates_removed` (only when
+  > 0) counts them. `total_found_is_upper_bound: true` (only when set) means a
+  folder held more matches than were fetched, so aliases beyond the cap could
+  not be subtracted and `total_found` may over-count.
   A single-folder search is never deduped.
 - `special_use` (only on `--folder all` rows whose folder has one) is the
   folder's RFC 6154 role (`\Inbox`, `\Sent`, `\Trash`, `\Important`, ...), so
@@ -227,7 +237,7 @@ Notes:
 Batch (`email show <id> <id> ...`, MCP `email_show` with several `ids`):
 ```json
 {
-  "success": true,
+  "success": false,
   "emails": [ { "id": "123", "gid": "acc_id:INBOX:123", "folder": "INBOX", "subject": "Hello", "...": "..." } ],
   "failed_ids": [ { "id": "999", "error": "not_found" } ],
   "requested": 2,

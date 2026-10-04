@@ -159,7 +159,8 @@ The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` 
 right mailbox with no `--folder` — even for results from `search --folder all`. `--folder all`
 returns each message **once**: Gmail labels (INBOX + Important + Starred + user labels) are
 collapsed to the most canonical folder (INBOX first), and `duplicates_removed` says how many
-alias rows were dropped. The legacy
+alias rows were dropped. Rows with no email id / Message-ID are never merged;
+`total_found_is_upper_bound: true` means `total_found` may over-count (aliases past a folder's fetch cap). The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
 Gids from **different accounts** can go in one `show` call (e.g. straight from `email recent`):
 they are fetched per account in parallel and merged in the order requested; the response then
@@ -266,8 +267,9 @@ mail-use <cmd> --help --json   # structured help: { name, description, options, 
   `MAILBOX_CACHE_FRESH_SECONDS`; `0` disables), the CLI auto-falls back to a live IMAP fetch — so a
   just-arrived OTP isn't missed between syncs. Pass `--live` to force IMAP outright.
 - **Partial cache never answers a wider window**: the cache holds only the newest N messages per
-  folder. When a cached `list`/`recent` is thin and `--since`/`--date-from` (or `--offset` paging)
-  reaches past what the cache covers, the CLI goes live even if the cache is seconds old — so
+  folder. When a cached `list`/`recent` page reaches past what the cache covers (a thin page whose
+  `--since`/`--date-from` or `--offset` goes further back, or a full page whose oldest row is older
+  than the covered date), the CLI goes live even if the cache is seconds old, so
   `--since 3mo --limit 500` returns the whole window, not just the cached slice. Cached results carry
   `cache_complete` (false = partial cache) and `cache_covers_from` (oldest date the cache is complete
   from); with `MAILBOX_CACHE_FRESH_SECONDS=0` they are your only signal, so check them.

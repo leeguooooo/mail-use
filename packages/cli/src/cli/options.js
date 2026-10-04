@@ -87,13 +87,35 @@ function _validateDateOpt(name, raw) {
   return { ok: false, error: `${name} value "${value}" is not a valid date (expected YYYY-MM-DD, ISO 8601, or relative like 2d/3w/1mo/today/yesterday)` };
 }
 
+// Read at most `maxBytes` from stdin, stopping there instead of buffering an
+// arbitrarily large pipe into memory first.
+function _readStdinBounded(maxBytes) {
+  const chunks = [];
+  let total = 0;
+  const chunk = Buffer.alloc(64 * 1024);
+  while (total < maxBytes) {
+    let n;
+    try {
+      n = fs.readSync(0, chunk, 0, Math.min(chunk.length, maxBytes - total), null);
+    } catch (e) {
+      if (e && e.code === "EAGAIN") continue; // non-blocking stdin: retry
+      if (e && e.code === "EOF") break; // Windows pipe closed
+      throw e;
+    }
+    if (n === 0) break;
+    chunks.push(Buffer.from(chunk.subarray(0, n)));
+    total += n;
+  }
+  return Buffer.concat(chunks, total);
+}
+
 // --body-file <path>; "-" reads the body from stdin (heredoc / pipe), the
 // robust way to pass multi-line text without shell quoting.
 function _readBodyFile(bodyFilePath) {
   if (bodyFilePath === "-") {
-    const buf = fs.readFileSync(0);
+    const buf = _readStdinBounded(MAX_BODY_FILE_BYTES + 1);
     if (buf.length > MAX_BODY_FILE_BYTES) {
-      throw new Error(`--body-file exceeds ${MAX_BODY_FILE_BYTES} bytes (size=${buf.length})`);
+      throw new Error(`--body-file exceeds ${MAX_BODY_FILE_BYTES} bytes (size>${MAX_BODY_FILE_BYTES})`);
     }
     return buf.toString("utf8");
   }
