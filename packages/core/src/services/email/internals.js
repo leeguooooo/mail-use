@@ -82,29 +82,35 @@ function _folderCanonicalRank(path, role) {
 
 // Identity of a message across folders of ONE account: the server's stable
 // email id (Gmail X-GM-MSGID / RFC 8474 EMAILID, which imapflow fetches as
-// emailId) when present, else the Message-ID header, else from+date+subject.
+// emailId) when present, else the Message-ID header. null when neither exists:
+// from+date+subject is too weak to prove two rows are one message (two distinct
+// notifications can share sender, second and subject), so such rows are never
+// merged.
 function _messageIdentityKey(item, emailId) {
   if (emailId) return `eid:${emailId}`;
   const mid = String((item && item.message_id) || "").trim().toLowerCase();
   if (mid) return `mid:${mid}`;
-  return `fds:${String(item.from || "").toLowerCase()}|${item.date || ""}|${item.subject || ""}`;
+  return null;
 }
 
 // Collapse the same message seen in several folders down to its most canonical
 // location. `keyOf(item)` gives the identity key, `rankOf(folder)` the folder
 // rank. Copies in the SAME folder as the winner are kept (two physical messages
-// with one Message-ID in one mailbox are not label aliases). Input order is
-// preserved. Returns { emails, removed }.
+// with one Message-ID in one mailbox are not label aliases). Rows whose key is
+// null (no strong identity) are always kept. Input order is preserved.
+// Returns { emails, removed }.
 function _dedupeAcrossFolders(emails, keyOf, rankOf) {
   const best = new Map();
   for (const e of emails || []) {
     const k = keyOf(e);
+    if (k == null) continue;
     const cur = best.get(k);
     if (!cur || rankOf(e.folder) < rankOf(cur.folder)) best.set(k, e);
   }
   const out = [];
   for (const e of emails || []) {
-    if (e.folder === best.get(keyOf(e)).folder) out.push(e);
+    const k = keyOf(e);
+    if (k == null || e.folder === best.get(k).folder) out.push(e);
   }
   return { emails: out, removed: (emails || []).length - out.length };
 }

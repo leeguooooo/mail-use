@@ -106,8 +106,11 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
 
   // Fetch more than needed per account so we can merge and slice globally.
   const perAccountFetchLimit = Math.max(lim + off, 200);
+  // Ceiling for the dedupe re-fetch below: when label aliases leave a deduped
+  // account short of offset+limit, the per-folder cap is raised up to this.
+  const DEDUPE_FETCH_CEILING = 5000;
 
-  async function _searchOneFolder(client, acc, folderPath) {
+  async function _searchOneFolder(client, acc, folderPath, fetchLimit) {
     const lock = await client.getMailboxLock(folderPath);
     try {
       const gmailRaw = _gmailRawFor(acc);
@@ -158,7 +161,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
       // preview is requested, because each fetch also pulls the message
       // source — pulling 5000 full bodies would be huge and slow.
       const clientCap = previewChars > 0 ? 500 : 5000;
-      const fetchCap = usedClientFilter ? Math.min(clientCap, sorted.length) : Math.min(perAccountFetchLimit, sorted.length);
+      const fetchCap = usedClientFilter ? Math.min(clientCap, sorted.length) : Math.min(fetchLimit, sorted.length);
       const slice = sorted.slice(0, fetchCap);
 
       // NOTE: in client-filter mode we only have envelope data (no
@@ -203,7 +206,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
           const env = msg.envelope || {};
           if (!matchesClient(env)) continue;
           matched += 1;
-          if (emails.length >= perAccountFetchLimit) continue;
+          if (emails.length >= fetchLimit) continue;
           const flags = msg.flags || new Set([]);
           const unread = !flags.has("\\Seen");
           const item = {
@@ -231,6 +234,9 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
       }
       const totalReported = usedClientFilter ? matched : total;
       const out = { total_found: totalReported, emails };
+      // More matches than rows fetched because of our per-folder cap: a larger
+      // fetchLimit would return more rows.
+      if (!folderTimedOut && emails.length >= fetchLimit && totalReported > emails.length) out.capped = true;
       if (folderTimedOut) out.timed_out = true;
       if (usedClientFilter) out.client_filter = { fetched: slice.length, mailbox_total: mailboxTotal };
       return out;
@@ -265,35 +271,55 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
         if (folderPaths.length === 0) folderPaths.push("INBOX");
         const roleOf = new Map(mailboxes.map((mb) => [mb.path || mb.name || "", _mailboxRole(mb)]));
 
-        let totalCombined = 0;
-        const emailsCombined = [];
-        const folderErrors = [];
-        for (const fp of folderPaths) {
-          if (_deadlineExceeded(started, timeoutMs)) {
-            timed_out = true;
-            folderErrors.push({ folder: fp, error: "skipped: search timed out" });
-            break;
+        const wantDedupe = folderPaths.length > 1 && (dedupe || _isGmailAccount(acc));
+        const need = off + lim;
+        let fetchLimit = perAccountFetchLimit;
+        let totalCombined;
+        let emailsCombined;
+        let folderErrors;
+        let anyCapped;
+        let emailsOut;
+        let duplicatesRemoved;
+        // Dedupe runs after the per-folder cap, so aliases can leave fewer
+        // unique rows than offset+limit while capped folders still hold more
+        // matches. Re-scan with a larger cap until the page can be filled, no
+        // folder is capped, or the ceiling/deadline is reached.
+        for (;;) {
+          totalCombined = 0;
+          emailsCombined = [];
+          folderErrors = [];
+          anyCapped = false;
+          for (const fp of folderPaths) {
+            if (_deadlineExceeded(started, timeoutMs)) {
+              timed_out = true;
+              folderErrors.push({ folder: fp, error: "skipped: search timed out" });
+              break;
+            }
+            try {
+              const part = await _searchOneFolder(client, acc, fp, fetchLimit);
+              totalCombined += part.total_found;
+              emailsCombined.push(...part.emails);
+              if (part.capped) anyCapped = true;
+              if (part.timed_out) timed_out = true;
+            } catch (fe) {
+              folderErrors.push({ folder: fp, error: fe && fe.message ? fe.message : "search failed" });
+            }
           }
-          try {
-            const part = await _searchOneFolder(client, acc, fp);
-            totalCombined += part.total_found;
-            emailsCombined.push(...part.emails);
-            if (part.timed_out) timed_out = true;
-          } catch (fe) {
-            folderErrors.push({ folder: fp, error: fe && fe.message ? fe.message : "search failed" });
-          }
-        }
 
-        let emailsOut = emailsCombined;
-        let duplicatesRemoved = 0;
-        if (folderPaths.length > 1 && (dedupe || _isGmailAccount(acc))) {
-          const d = _dedupeAcrossFolders(
-            emailsCombined,
-            (e) => _messageIdentityKey(e, e[_EMAIL_ID]),
-            (f) => _folderCanonicalRank(f, roleOf.get(f) || ""),
-          );
-          emailsOut = d.emails;
-          duplicatesRemoved = d.removed;
+          emailsOut = emailsCombined;
+          duplicatesRemoved = 0;
+          if (wantDedupe) {
+            const d = _dedupeAcrossFolders(
+              emailsCombined,
+              (e) => _messageIdentityKey(e, e[_EMAIL_ID]),
+              (f) => _folderCanonicalRank(f, roleOf.get(f) || ""),
+            );
+            emailsOut = d.emails;
+            duplicatesRemoved = d.removed;
+          }
+          const short = emailsOut.length < need;
+          if (!wantDedupe || !short || !anyCapped || timed_out || fetchLimit >= DEDUPE_FETCH_CEILING) break;
+          fetchLimit = Math.min(DEDUPE_FETCH_CEILING, Math.max(fetchLimit * 2, need + duplicatesRemoved));
         }
         // Folder names are localized ("[Gmail]/已发邮件"), so tag each row with
         // its folder's special-use role for callers that must recognise
@@ -303,9 +329,12 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
           if (role) e.special_use = role;
         }
         // Per-folder SEARCH counts include every alias; subtract the ones we
-        // collapsed so total_found counts messages, not folder hits.
+        // collapsed so total_found counts messages, not folder hits. Aliases
+        // beyond a folder's fetch cap were never seen, so when any folder was
+        // capped the deduped total is only an upper bound.
         const out = { success: true, total_found: Math.max(0, totalCombined - duplicatesRemoved), emails: emailsOut };
         if (duplicatesRemoved) out.duplicates_removed = duplicatesRemoved;
+        if (wantDedupe && anyCapped) out.total_found_is_upper_bound = true;
         if (folderErrors.length) out.folder_errors = folderErrors;
         return out;
       }, { idempotent: true });
@@ -343,6 +372,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
   const page = allEmails.slice(off, off + lim);
   const total_found = perAccount.reduce((sum, r) => sum + Number((r && r.total_found) || 0), 0);
   const duplicates_removed = perAccount.reduce((sum, r) => sum + Number((r && r.duplicates_removed) || 0), 0);
+  const total_found_is_upper_bound = perAccount.some((r) => r && r.total_found_is_upper_bound);
   const accounts_count = targets.length;
   const search_time = (Date.now() - started) / 1000;
 
@@ -359,6 +389,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
     accounts_info: [],
     search_time,
     ...(duplicates_removed ? { duplicates_removed } : {}),
+    ...(total_found_is_upper_bound ? { total_found_is_upper_bound } : {}),
     timed_out,
     ...(timed_out ? { pending_accounts, timeout_ms: timeoutMs, timed_out_note: `Search exceeded ${timeoutMs}ms and returned partial results; narrow with --account-id / --folder INBOX or raise --timeout` } : {}),
     search_params: { query: q, date_from, date_to, unread_only: unreadOnly, folder },

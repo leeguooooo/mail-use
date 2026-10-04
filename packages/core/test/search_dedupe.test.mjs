@@ -141,10 +141,20 @@ describe("_dedupeAcrossFolders", () => {
     expect(d.removed).toBe(2);
   });
 
-  it("prefers the server email id, then Message-ID, then from+date+subject", () => {
+  it("prefers the server email id, then Message-ID; no strong id -> no key", () => {
     expect(key({ eid: "42", message_id: "<x>" })).toBe("eid:42");
     expect(key({ message_id: " <X@Y> " })).toBe("mid:<x@y>");
-    expect(key({ from: "A@b", date: "2026-01-01 00:00:00", subject: "s" })).toBe("fds:a@b|2026-01-01 00:00:00|s");
+    expect(key({ from: "A@b", date: "2026-01-01 00:00:00", subject: "s" })).toBeNull();
+  });
+
+  it("never merges rows that only share from+date+subject", () => {
+    const rows = [
+      { folder: "INBOX", from: "a@b", date: "2026-01-01 00:00:00", subject: "s" },
+      { folder: "Work", from: "a@b", date: "2026-01-01 00:00:00", subject: "s" },
+    ];
+    const d = internals._dedupeAcrossFolders(rows, key, rank);
+    expect(d.emails).toHaveLength(2);
+    expect(d.removed).toBe(0);
   });
 
   it("ranks INBOX, then user folders, then Sent, then label views and All Mail", () => {
@@ -153,5 +163,44 @@ describe("_dedupeAcrossFolders", () => {
     expect(r("Work", "")).toBeLessThan(r("[Gmail]/Sent Mail", "\\Sent"));
     expect(r("[Gmail]/Sent Mail", "\\Sent")).toBeLessThan(r("[Gmail]/Important", "\\Important"));
     expect(r("[Gmail]/Starred", "\\Flagged")).toBeLessThan(r("[Gmail]/All Mail", "\\All"));
+  });
+});
+
+describe("search --folder all: dedupe vs the per-folder fetch cap", () => {
+  beforeEach(() => {
+    setTestEnv("search_dedupe_cap", { gm: { email: "me@gmail.com", password: "x", provider: "gmail" } });
+  });
+
+  it("re-fetches with a larger cap when aliases leave the page short", async () => {
+    // Work: 300 rows, each Message-ID twice (150 messages). INBOX holds the 100
+    // newest of them, so the first 200-row Work fetch is all INBOX aliases.
+    const work = [];
+    for (let i = 1; i <= 300; i += 1) work.push(msg(i, { messageId: `<w${Math.ceil(i / 2)}@x>` }));
+    const inbox = [];
+    for (let k = 51; k <= 150; k += 1) inbox.push(msg(1000 + k, { messageId: `<w${k}@x>` }));
+    globalThis.__MAILBOX_MOCK_STATE.accounts.gm = {
+      id: "gm", email: "me@gmail.com",
+      mailboxes: { INBOX: { specialUse: "\\Inbox", messages: inbox }, Work: { specialUse: "", messages: work } },
+    };
+    const r = await email.searchEmails({ query: "lemon", account_id: "gm", folder: "all", limit: 200, offset: 0 });
+    expect(r.emails).toHaveLength(200);
+    expect(r.total_found).toBe(200);
+    expect(r.duplicates_removed).toBe(200);
+    expect(r.total_found_is_upper_bound).toBeUndefined();
+  });
+
+  it("flags total_found as an upper bound when a capped folder may hide aliases", async () => {
+    const work = [];
+    for (let i = 1; i <= 250; i += 1) work.push(msg(i, { messageId: `<w${i}@x>` }));
+    const inbox = [];
+    for (let i = 1; i <= 50; i += 1) inbox.push(msg(1000 + i, { messageId: `<w${i}@x>` }));
+    globalThis.__MAILBOX_MOCK_STATE.accounts.gm = {
+      id: "gm", email: "me@gmail.com",
+      mailboxes: { INBOX: { specialUse: "\\Inbox", messages: inbox }, Work: { specialUse: "", messages: work } },
+    };
+    const r = await email.searchEmails({ query: "lemon", account_id: "gm", folder: "all", limit: 10 });
+    expect(r.emails).toHaveLength(10);
+    expect(r.total_found).toBe(300); // 250 real messages; the 50 uncapped aliases were never seen
+    expect(r.total_found_is_upper_bound).toBe(true);
   });
 });
