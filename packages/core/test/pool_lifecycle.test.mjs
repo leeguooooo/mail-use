@@ -1,9 +1,10 @@
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
-const { ImapPool, abandonClient, _buildClient } = require("../src/services/imap_pool.js");
+const { ImapPool, abandonClient, _buildClient, _isConnectionError } = require("../src/services/imap_pool.js");
 
 const ACCOUNT = { id: "acc", email: "a@b.com", password: "x", imap: { host: "127.0.0.1", port: 993, secure: true } };
 
@@ -210,5 +211,134 @@ describe("ImapFlow 'error' events", () => {
     } finally {
       write.mockRestore();
     }
+  });
+});
+
+// An ImapFlow stand-in that is a real EventEmitter, so the pool's own
+// 'error'/'close' wiring (_wire) is what gets exercised.
+function emitterClient() {
+  const c = new EventEmitter();
+  c.usable = true;
+  c.closed = false;
+  c.loggedOut = false;
+  c.noop = async () => {};
+  c.logout = async () => { c.loggedOut = true; c.usable = false; };
+  c.close = () => { c.closed = true; c.usable = false; };
+  // What _buildClient guarantees for real clients: a listener from birth.
+  c.on("error", () => {});
+  return c;
+}
+
+function wiredPool({ maxSize = 2 } = {}) {
+  const pool = new ImapPool({ idleMs: 60_000, keepWarm: 1 });
+  pool.maxPerAccount = maxSize;
+  const ap = pool._poolFor(ACCOUNT);
+  const built = [];
+  ap._build = async () => {
+    const c = emitterClient();
+    built.push(c);
+    return ap._wire(c);
+  };
+  return { pool, ap, built };
+}
+
+describe("ImapPool eviction on socket errors", () => {
+  it("an idle client emitting 'error' (ECONNRESET) is evicted and the next call reconnects", async () => {
+    const { pool, ap, built } = wiredPool();
+    pools.push(pool);
+    await pool.withClient(ACCOUNT, async () => "warm");
+    expect(built.length).toBe(1);
+    const dead = built[0];
+
+    const err = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    expect(() => dead.emit("error", err)).not.toThrow();
+    expect(dead.closed).toBe(true);
+    expect(ap.entries.some((e) => e.client === dead)).toBe(false);
+
+    let used;
+    const r = await pool.withClient(ACCOUNT, async (client) => { used = client; return "ok"; });
+    expect(r).toBe("ok");
+    expect(used).not.toBe(dead);
+    expect(built.length).toBe(2);
+  });
+
+  it("an error mid-command on an idempotent read retries on a fresh connection", async () => {
+    const { pool, ap, built } = wiredPool();
+    pools.push(pool);
+    let runs = 0;
+    const r = await pool.withClient(ACCOUNT, async (client) => {
+      runs += 1;
+      if (runs === 1) {
+        client.emit("error", Object.assign(new Error("Socket timeout"), { code: "ETIMEOUT" }));
+        // What older ImapFlow threw once the socket had been torn down.
+        throw new TypeError("Cannot read properties of null (reading 'read')");
+      }
+      return "ok";
+    }, { idempotent: true });
+    expect(r).toBe("ok");
+    expect(runs).toBe(2);
+    expect(built.length).toBe(2);
+    expect(built[0].closed).toBe(true);
+    expect(ap.entries.map((e) => e.client)).toEqual([built[1]]);
+  });
+
+  it("a mutation is not re-run after its connection died, but the dead client is dropped", async () => {
+    const { pool, ap, built } = wiredPool();
+    pools.push(pool);
+    let runs = 0;
+    await expect(pool.withClient(ACCOUNT, async (client) => {
+      runs += 1;
+      client.emit("error", new Error("Already logged out"));
+      throw new Error("Already logged out");
+    })).rejects.toThrow("Already logged out");
+    expect(runs).toBe(1);
+    expect(ap.entries.length).toBe(0);
+    await pool.withClient(ACCOUNT, async () => {});
+    expect(built.length).toBe(2);
+  });
+
+  it("a 'close' event evicts the client as well", async () => {
+    const { pool, ap, built } = wiredPool();
+    pools.push(pool);
+    await pool.withClient(ACCOUNT, async () => {});
+    built[0].usable = false;
+    built[0].emit("close");
+    expect(ap.entries.length).toBe(0);
+    await pool.withClient(ACCOUNT, async () => {});
+    expect(built.length).toBe(2);
+  });
+
+  it("a real ImapFlow client built by the pool survives the errors seen in the daemon log", () => {
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const pool = new ImapPool({ idleMs: 60_000 });
+    pools.push(pool);
+    try {
+      const client = _buildClient(ACCOUNT);
+      const ap = pool._poolFor(ACCOUNT);
+      const entry = ap._wire(client);
+      ap.entries.push(entry);
+      for (const msg of ["read ECONNRESET", "Socket timeout", "Connection not available", "Already logged out"]) {
+        expect(() => client.emit("error", new Error(msg))).not.toThrow();
+      }
+      expect(ap.entries.length).toBe(0);
+      expect(client.usable).toBe(false);
+    } finally {
+      write.mockRestore();
+    }
+  });
+});
+
+describe("_isConnectionError", () => {
+  it("recognises the dead-connection errors ImapFlow raises", () => {
+    for (const msg of ["read ECONNRESET", "Socket timeout", "Connection not available", "Already logged out", "Unexpected close", "Connection closed"]) {
+      expect(_isConnectionError(new Error(msg))).toBe(true);
+    }
+    expect(_isConnectionError(Object.assign(new Error("x"), { code: "NoConnection" }))).toBe(true);
+    expect(_isConnectionError(new TypeError("Cannot read properties of null (reading 'read')"), { usable: false })).toBe(true);
+  });
+
+  it("leaves ordinary command failures on a live connection alone", () => {
+    expect(_isConnectionError(new Error("Mailbox doesn't exist: Foo"), { usable: true })).toBe(false);
+    expect(_isConnectionError(new Error("Command failed"))).toBe(false);
   });
 });

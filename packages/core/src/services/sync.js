@@ -66,6 +66,8 @@ function status() {
       last_sync: per.last_sync || null,
       total_emails: per.total_emails || 0,
       sync_status: per.sync_status || "pending",
+      last_error: per.last_error || null,
+      last_error_at: per.last_error_at || null,
     };
   });
 
@@ -297,11 +299,18 @@ async function force({ account_id = "", full = false } = {}) {
   const results = await _mapLimit(target, ACCOUNT_CONCURRENCY, async (a) => {
     try {
       const r = await _syncAccount(a, { dbPath: pc.emailSyncDb, full: Boolean(full) });
-      state.accounts[a.id] = { last_sync: _nowIso(), total_emails: r.total_in_folder || 0, sync_status: "ok" };
+      // Spread the previous entry so last_error/last_error_at survive a
+      // later success: "it failed at 03:10 with X" is what you need when a
+      // sync is flaky, and a success must not erase it.
+      state.accounts[a.id] = { ...(state.accounts[a.id] || {}), last_sync: _nowIso(), total_emails: r.total_in_folder || 0, sync_status: "ok" };
       delete r.total_in_folder;
       return r;
     } catch (e) {
-      return { success: false, account_id: a.id, error: e && e.message ? e.message : "sync failed" };
+      const error = e && e.message ? e.message : "sync failed";
+      // Without this the account kept whatever status its last good pass
+      // wrote ("ok"), and the failure reason was dropped on the floor.
+      state.accounts[a.id] = { ...(state.accounts[a.id] || {}), sync_status: "error", last_error: error, last_error_at: _nowIso() };
+      return { success: false, account_id: a.id, error };
     }
   });
 
@@ -333,8 +342,12 @@ async function force({ account_id = "", full = false } = {}) {
   }
 
   const okCount = results.filter((r) => r.success).length;
+  const failed = results.filter((r) => !r.success);
   return {
     success: okCount === results.length,
+    // Only on failure: which accounts and why, so a caller that only looks at
+    // `error` (the daemon's sync loop) can say more than "sync failed".
+    ...(failed.length ? { error: failed.map((r) => `${r.account_id}: ${r.error || "sync failed"}`).join("; ") } : {}),
     accounts_synced: okCount,
     total_accounts: results.length,
     emails_added: results.reduce((sum, r) => sum + Number(r.emails_added || 0), 0),

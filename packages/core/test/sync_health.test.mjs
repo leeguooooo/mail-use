@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 const sync = require("../src/services/sync.js");
 const { paths } = require("@mail-use/shared");
-const { resetMockState } = require("../src/testing/mock_store.js");
+const { resetMockState, setMockFailure } = require("../src/testing/mock_store.js");
 const initSqlJs = require("sql.js/dist/sql-asm.js");
 
 function setTestEnv(name) {
@@ -55,6 +55,25 @@ describe("sync.health counters", () => {
     expect(h.total_syncs).toBe(4);
     expect(h.total_failures).toBe(1);
     expect(h.success_rate).toBe(75);
+  });
+
+  it("a failed account sync records why, and a later success keeps the last error", async () => {
+    setMockFailure("mailboxOpen", () => true);
+    const r = await sync.force({});
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("mock_acc: mock mailboxOpen failure");
+
+    let acct = sync.status().accounts.find((a) => a.id === "mock_acc");
+    expect(acct.sync_status).toBe("error");
+    expect(acct.last_error).toBe("mock mailboxOpen failure");
+    expect(acct.last_error_at).toEqual(expect.any(String));
+    expect(sync.health().healthy_accounts).toBe(0);
+
+    setMockFailure("mailboxOpen", null);
+    expect((await sync.force({})).success).toBe(true);
+    acct = sync.status().accounts.find((a) => a.id === "mock_acc");
+    expect(acct.sync_status).toBe("ok");
+    expect(acct.last_error).toBe("mock mailboxOpen failure");
   });
 
   it("a new cache file no longer gets the unused legacy tables", async () => {

@@ -88,7 +88,10 @@ function register(program, ctx) {
           _out("\nsync:\n");
           _out(`  attempted=${r.sync.syncs_attempted} ok=${r.sync.syncs_ok} failed=${r.sync.syncs_failed}\n`);
           if (r.sync.last_sync_at) _out(`  last_sync_at=${r.sync.last_sync_at}\n`);
-          if (r.sync.last_sync_error) _out(`  last_sync_error=${r.sync.last_sync_error}\n`);
+          if (r.sync.last_sync_error) _out(`  last_sync_error=${r.sync.last_sync_error}${r.sync.last_sync_error_at ? ` (at ${r.sync.last_sync_error_at})` : ""}\n`);
+          for (const [id, a] of Object.entries(r.sync.accounts || {})) {
+            if (a && a.last_error) _out(`  ${id}: last_error=${a.last_error} (at ${a.last_error_at})${a.last_ok_at ? ` last_ok_at=${a.last_ok_at}` : ""}\n`);
+          }
           if (r.sync.prewarm) _out(`  prewarm=${r.sync.prewarm.completed}/${r.sync.prewarm.started} (${r.sync.prewarm.failed} failed)\n`);
         }
         if (r.update && r.update.update_available) {

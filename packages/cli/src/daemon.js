@@ -112,7 +112,7 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
   const pool = new ImapPool();
   core.imap.setGlobalPool(pool);
   const startedAt = Date.now();
-  const stats = { syncs_attempted: 0, syncs_ok: 0, syncs_failed: 0, last_sync_at: null, last_sync_error: null };
+  const stats = _newSyncStats();
 
   const ctx = { pool, startedAt, log, stats, update: null };
   const updateTimers = _startUpdateChecks(ctx);
@@ -167,16 +167,13 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
       if (syncStopped) return;
       if (syncRunning) return; // belt-and-suspenders; loop already serializes
       syncRunning = true;
-      stats.syncs_attempted += 1;
       try {
         const r = await core.sync.force({ account_id: syncAccountId || "", full: false });
-        if (r && r.success === false) throw new Error(r.error || "sync failed");
-        stats.syncs_ok += 1;
-        stats.last_sync_at = new Date().toISOString();
-        stats.last_sync_error = null;
+        const err = _recordSyncResult(stats, { result: r, accountId: syncAccountId });
+        if (err) log(`[mail-use daemon] sync failed: ${err}`);
       } catch (e) {
-        stats.syncs_failed += 1;
-        stats.last_sync_error = (e && e.message) || String(e);
+        const err = _recordSyncResult(stats, { error: e, accountId: syncAccountId });
+        log(`[mail-use daemon] sync failed: ${err}`);
       } finally {
         syncRunning = false;
       }
@@ -232,6 +229,70 @@ async function startDaemon({ foreground: _foreground = true, log = console.error
 
   log(`[mail-use daemon] listening on ${sockPath} (pid=${process.pid})`);
   return { server, pool, sockPath, stats };
+}
+
+function _newSyncStats() {
+  return {
+    syncs_attempted: 0,
+    syncs_ok: 0,
+    syncs_failed: 0,
+    last_sync_at: null, // last fully successful pass
+    last_sync_error: null, // most recent failure; NOT cleared by a later success
+    last_sync_error_at: null,
+    accounts: {}, // account_id -> { last_ok_at, last_error, last_error_at }
+  };
+}
+
+// Fold one background sync pass into the daemon's stats. Returns the error
+// message when the pass failed, else null.
+//
+// last_sync_error used to be reset to null by every successful pass, so with
+// syncs_failed in the hundreds `daemon status` still showed no reason at all.
+// It is now sticky; compare last_sync_error_at with last_sync_at to tell
+// whether the failure is current.
+function _recordSyncResult(stats, { result, error, accountId } = {}) {
+  const now = new Date().toISOString();
+  stats.syncs_attempted += 1;
+  if (!stats.accounts) stats.accounts = {};
+  const acct = (id) => {
+    if (!stats.accounts[id]) stats.accounts[id] = { last_ok_at: null, last_error: null, last_error_at: null };
+    return stats.accounts[id];
+  };
+
+  // Per-account outcomes: an all-accounts result carries `results`; a
+  // single-account result describes just that account.
+  let per = [];
+  if (result && Array.isArray(result.results)) per = result.results;
+  else if (result && accountId) per = [{ ...result, account_id: result.account_id || accountId }];
+  for (const r of per) {
+    if (!r || !r.account_id) continue;
+    const a = acct(r.account_id);
+    if (r.success === false) {
+      a.last_error = r.error || "sync failed";
+      a.last_error_at = now;
+    } else {
+      a.last_ok_at = now;
+    }
+  }
+
+  let msg = null;
+  if (error) msg = error.message || String(error);
+  else if (!result || result.success === false) msg = (result && result.error) || "sync failed";
+  if (error && accountId) {
+    const a = acct(accountId);
+    a.last_error = msg;
+    a.last_error_at = now;
+  }
+
+  if (msg) {
+    stats.syncs_failed += 1;
+    stats.last_sync_error = msg;
+    stats.last_sync_error_at = now;
+    return msg;
+  }
+  stats.syncs_ok += 1;
+  stats.last_sync_at = now;
+  return null;
 }
 
 // How long shutdown waits for pooled IMAP connections to log out.
@@ -668,5 +729,6 @@ module.exports = {
   installAutostart, uninstallAutostart, restartDaemon, stopDaemon,
   // Exported for tests: the update check must stay disableable and unref'd.
   _updateCheckIntervalMs, _startUpdateChecks,
+  _newSyncStats, _recordSyncResult,
   _renderLaunchdPlist, _renderSystemdUnit, _readInstalledSyncInterval, _autostartPaths,
 };

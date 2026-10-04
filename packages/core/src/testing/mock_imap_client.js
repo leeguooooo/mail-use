@@ -139,6 +139,7 @@ class MockImapClient {
   async mailboxOpen(name) {
     this._mailbox = name || "INBOX";
     this._log("mailboxOpen");
+    _maybeFail("mailboxOpen", this._mailbox);
     const mb = getMailbox(this._account.id, this._mailbox);
     if (!mb) throw new Error(`Mailbox not found: ${this._mailbox}`);
     const messages = mb.messages || [];
