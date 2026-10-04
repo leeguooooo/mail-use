@@ -249,6 +249,8 @@ class MockImapClient {
     const msg = _cloneMessage(m);
     // mimic imapflow fetch response shape
     const out = { uid: msg.uid };
+    // imapflow always asks for EMAILID / X-GM-MSGID when the server has it.
+    if (m.emailId != null) out.emailId = String(m.emailId);
     if (opts.envelope) out.envelope = msg.envelope;
     if (opts.flags) out.flags = msg.flags;
     if (opts.internalDate) out.internalDate = msg.internalDate;
@@ -350,12 +352,14 @@ class MockImapClient {
     this._log("list");
     const names = listMailboxNames(this._account.id);
     for (const name of names) {
+      const mb = getMailbox(this._account.id, name) || {};
       yield {
         path: name,
         name,
         delimiter: "/",
-        flags: new Set([]),
-        specialUse: name.toLowerCase() === "trash" ? "\\Trash" : "",
+        // Fixtures may declare LIST flags / special-use (Gmail-style folders).
+        flags: new Set(mb.flags || []),
+        specialUse: mb.specialUse != null ? mb.specialUse : (name.toLowerCase() === "trash" ? "\\Trash" : ""),
       };
     }
   }

@@ -156,7 +156,10 @@ mail-use email folders --account-id <id> --json
 ```
 
 The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` opens the
-right mailbox with no `--folder` — even for results from `search --folder all`. The legacy
+right mailbox with no `--folder` — even for results from `search --folder all`. `--folder all`
+returns each message **once**: Gmail labels (INBOX + Important + Starred + user labels) are
+collapsed to the most canonical folder (INBOX first), and `duplicates_removed` says how many
+alias rows were dropped. The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
 
 ### Mutate (all dry-run by default)
@@ -179,7 +182,8 @@ mail-use email delete --from spam@x.com --all-folders --confirm --json   # span 
 `groups` breakdown (per `account_id` + `folder`, with sample subjects) so you can eyeball what
 will change before `--confirm`. Filters matching >100 emails require `--confirm`.
 
-**Safety:** `--all-folders` skips special-use folders (Sent / Drafts / Junk / Trash) by
+**Safety:** `--all-folders` skips special-use folders (Sent / Drafts / Junk / Trash, recognised
+by their IMAP special-use role, so localized names like `[Gmail]/已发邮件` count) by
 default — pass `--include-special` to include them. Without `--confirm`, every destructive
 command returns a JSON dry-run preview and changes nothing.
 
