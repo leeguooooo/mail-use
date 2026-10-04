@@ -1,18 +1,20 @@
-// Rule-based email classifier. Buckets an email into one of 7 categories used by
+// Rule-based email classifier. Buckets an email into one of 8 categories used by
 // the cleanup workflow. Protected categories short-circuit before any cleanup
-// bucket, so finance/travel/security/support mail is never proposed for deletion.
+// bucket, so finance/travel/security/support/action-required mail is never
+// proposed for deletion.
 //
 // Categories: protected_finance | protected_travel | security | support_case |
-//             marketing | routine_notification | unknown
+//             action_required | marketing | routine_notification | unknown
 
 const fs = require("fs");
 const path = require("path");
 
-const PROTECTED = new Set(["protected_finance", "protected_travel", "security", "support_case"]);
+const PROTECTED = new Set(["protected_finance", "protected_travel", "security", "support_case", "action_required"]);
 const CLEANUP = new Set(["marketing", "routine_notification"]);
 
 // Shipped defaults. Override per-user via <configDir>/cleanup_rules.json (deep
-// merged — arrays are replaced, not concatenated).
+// merged — arrays are replaced, not concatenated). Matching is substring,
+// case-insensitive.
 const DEFAULT_RULES = {
   finance: {
     domains: [
@@ -47,6 +49,30 @@ const DEFAULT_RULES = {
   support: {
     senders: ["support@", "help@", "customercare@", "customer-service@"],
     subjects: ["ticket #", "case #", "ticket#", "case#", "support request", "[case", "お問い合わせ", "サポート", "工单", "客服"],
+  },
+  // Mail asking the reader to act, warning about an alert, or naming a
+  // deadline / expiry / suspension / deletion / failed payment. Often sent from
+  // noreply@ notification addresses (e.g. "[需要操作] 恢复 example.jp 的名称服务器"
+  // from noreply@notify.cloudflare.com), which would otherwise land in
+  // routine_notification. Subject-only, checked before marketing/routine;
+  // deliberately broad — a missed cleanup costs nothing, a deleted alert can.
+  // Also honors optional domains / senders lists from cleanup_rules.json.
+  action_required: {
+    subjects: [
+      // English
+      "action required", "action needed", "requires action", "required action", "response required",
+      "[alert]", "alert:", "[warning]", "warning:", "urgent", "important:", "[important]", "important notice",
+      "expir", "suspend", "deactivat", "deletion", "deleted", "will be deleted", "terminat",
+      "final notice", "last notice", "final reminder", "overdue", "past due",
+      "payment failed", "payment declined", "failed payment", "payment unsuccessful", "unpaid",
+      "deadline", "due date", "limit reached", "limit exceeded", "quota exceeded",
+      // Chinese
+      "需要操作", "需要采取措施", "需采取", "请尽快", "紧急", "重要", "警报", "告警", "警告",
+      "到期", "过期", "即将删除", "已删除", "删除", "暂停", "停用", "欠费", "逾期", "催缴", "未支付", "支付失败", "截止",
+      // Japanese
+      "要対応", "ご対応", "対応が必要", "要確認", "至急", "アラート", "期限", "督促", "未納", "未払",
+      "支払いに失敗", "停止", "削除", "失効",
+    ],
   },
   marketing: {
     senders: ["newsletter@", "marketing@", "promo@", "news@", "campaign@", "deals@", "offers@", "info@"],
@@ -112,6 +138,8 @@ function classify(meta, rules) {
   if (anyDomain(r.travel.domains) || anySubject(r.travel.subjects)) return "protected_travel";
   if (anyDomain(r.security.domains) || anySender(r.security.senders) || anySubject(r.security.subjects)) return "security";
   if (anySender(r.support.senders) || anySubject(r.support.subjects)) return "support_case";
+  const act = r.action_required || {};
+  if (anyDomain(act.domains) || anySender(act.senders) || anySubject(act.subjects)) return "action_required";
 
   // Cleanup-eligible categories.
   if (hasUnsub || anySender(r.marketing.senders) || anySubject(r.marketing.subjects)) return "marketing";

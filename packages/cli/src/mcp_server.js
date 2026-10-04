@@ -343,7 +343,7 @@ function buildServer() {
   if (typeof cleanup.plan === "function") {
     server.registerTool("cleanup", {
       title: "Classify emails and plan/apply a cleanup",
-      description: "Rule-based classifier into protected_finance/protected_travel/security/support_case (never deleted) vs marketing/routine_notification (cleanup candidates) vs unknown. Returns a plan by default (read-only). DESTRUCTIVE when confirm=true: deletes the marketing/routine_notification candidates (moved to trash unless permanent=true).",
+      description: "Rule-based classifier into protected_finance/protected_travel/security/support_case/action_required (never deleted; action_required = subjects signalling required action, alerts, deadlines, expiry, suspension, deletion or failed payment) vs marketing/routine_notification (cleanup candidates) vs unknown. Scans only the newest `limit` emails (default 200); the plan reports scan_limit and truncated=true when the folder holds more. Returns a plan by default (read-only). DESTRUCTIVE when confirm=true: deletes the marketing/routine_notification candidates (moved to trash unless permanent=true).",
       inputSchema: {
         account_id: accountIdOpt,
         folder: folderOpt,

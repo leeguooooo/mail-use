@@ -202,10 +202,19 @@ mail-use cleanup --categories marketing --confirm --json   # only one category
 ```
 
 `cleanup` buckets each email into `protected_finance` / `protected_travel` / `security` /
-`support_case` (never deleted) vs `marketing` / `routine_notification` (cleanup candidates) vs
-`unknown`. Rules are sender/domain/subject based; override the allowlists via
-`<configDir>/cleanup_rules.json`. The plan reports `by_category`, `candidates_by_category`, and
-`protected_counts`; `--confirm` pipes the candidate categories into `email delete`.
+`support_case` / `action_required` (never deleted) vs `marketing` / `routine_notification`
+(cleanup candidates) vs `unknown`. `action_required` catches subjects that ask for action or
+carry an alert / deadline / expiry / suspension / deletion / failed payment ("Action Required",
+"[Alert]", "expir", "final notice", "需要操作", "警报", "紧急", "要対応", "期限", "督促", ...) —
+even from `noreply@` senders, so e.g. a Cloudflare "[需要操作] 恢复 … 的名称服务器" is never
+deleted. Rules are sender/domain/subject based; override the allowlists via
+`<configDir>/cleanup_rules.json` (arrays replace the defaults). The plan reports `by_category`,
+`candidates_by_category`, and `protected_counts`; `--confirm` pipes the candidate categories
+into `email delete`. Still skim the candidates before `--confirm` — the rules are heuristics.
+
+Only the newest `--limit` emails (default 200) are scanned. The plan says so: `scan_limit`,
+and `truncated: true` + `scan_note` when the folder holds more (`total_in_folder`). Raise
+`--limit` (max `MAILBOX_MAX_LIMIT`, default 1000) to cover more.
 
 ### Discover the surface
 
