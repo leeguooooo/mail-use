@@ -10,7 +10,7 @@ function registerCleanup(program, ctx) {
     .description("Classify emails and propose a deletion plan (default: plan only; --confirm to delete marketing/routine candidates)")
     .option("--account-id <id>", "Account id/email (omit to span all accounts)")
     .option("--folder <name>", "Folder", "INBOX")
-    .option("--limit <n>", "Scan limit", "200")
+    .option("--limit <n>", "Scan only the newest N emails (the plan reports scan_limit + truncated)", "200")
     .option("--unread-only", "Only classify unread emails")
     .option("--categories <list>", "Comma-separated categories to delete on --confirm", "marketing,routine_notification")
     .option("--permanent", "Permanently delete instead of moving to trash")

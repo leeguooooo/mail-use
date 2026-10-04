@@ -205,6 +205,33 @@ Notes:
   `QB-046193`), ordered as found and de-duplicated. On a batch `show` the array
   is attached per email. Survives `--format compact`.
 
+Batch (`email show <id> <id> ...`, MCP `email_show` with several `ids`):
+```json
+{
+  "success": true,
+  "emails": [ { "id": "123", "gid": "acc_id:INBOX:123", "folder": "INBOX", "subject": "Hello", "...": "..." } ],
+  "failed_ids": [ { "id": "999", "error": "not_found" } ],
+  "requested": 2,
+  "returned": 1,
+  "account_id": "acc_id"
+}
+```
+- `emails[]` follows the order the ids were requested in.
+- Gids are self-describing (`account_id:folder:uid`), so one call may mix
+  accounts and folders. Ids are grouped per account (fetched in parallel) and
+  per folder, then merged into one response. When the gids name **more than one
+  account**, the top-level `account_id` is **omitted** and replaced by
+  `account_ids: ["acc_a", "acc_b"]` (a new field, so a reader of `account_id`
+  never sees its type change); every `emails[]` and `failed_ids[]` entry then
+  carries its own `account_id`. An account whose fetch fails outright (unknown
+  account, connection error) degrades to `failed_ids` for its ids.
+- `success` is `false` (exit 1) when any id failed; the found emails are still
+  returned.
+- Errors (exit 2): `ambiguous_account` — a bare uid next to gids from several
+  accounts (use full gids). `account_mismatch` — `--account-id` (MCP:
+  `account_id`) names a different account than a gid; an email address that
+  names the gid's account is accepted.
+
 ### email mark
 Dry-run:
 ```json
@@ -401,6 +428,28 @@ On error: `{"success": false, "error": "...", "from": "user@example.com"}`.
 }
 ```
 
+### Ids across folders / accounts (mark, delete, move)
+`email mark` / `email delete` / `email move` (and MCP `email_mark` /
+`email_delete` / `email_move`) group explicit ids by account, then by folder
+(the gid's folder; an explicit `--folder` / `--source-folder` wins). One group
+returns the per-command shape above, stamped with `folder`. Several groups:
+```json
+{
+  "success": true,
+  "accounts_count": 2,
+  "folders_count": 3,
+  "results": [
+    { "account_id": "acc_a", "folder": "INBOX", "success": true, "dry_run": true, "email_ids": ["1"], "...": "..." },
+    { "account_id": "acc_b", "folder": "INBOX", "success": true, "dry_run": true, "email_ids": ["2"], "...": "..." },
+    { "account_id": "acc_b", "folder": "Trash", "success": true, "dry_run": true, "email_ids": ["3"], "...": "..." }
+  ]
+}
+```
+`accounts_count` is present only when the ids span accounts (one account with
+several folders reports `folders_count` + `results` alone). The same
+`ambiguous_account` / `account_mismatch` errors as `email show` apply
+(`email flag` takes one id and can only hit `account_mismatch`).
+
 ## sync
 
 ### sync status / watch
@@ -562,5 +611,57 @@ Single account (`--account-id`):
     "needs_attention": 0
   },
   "generated_at": "2025-01-01T00:00:00Z"
+}
+```
+
+## cleanup
+
+### cleanup (plan, default)
+```json
+{
+  "success": true,
+  "plan_only": true,
+  "scanned": 200,
+  "scan_limit": 200,
+  "total_in_folder": 4312,
+  "truncated": true,
+  "scan_note": "Classified only the newest 200 of 4312 emails (scan limit 200); pass --limit (MCP: limit) to scan more.",
+  "folder": "INBOX",
+  "account_id": "",
+  "by_category": { "marketing": 40, "routine_notification": 25, "action_required": 3, "unknown": 132 },
+  "candidates_by_category": {
+    "marketing": [ { "id": "1", "gid": "acc_id:INBOX:1", "account_id": "acc_id", "folder": "INBOX", "from": "...", "subject": "...", "date": "...", "unread": false } ]
+  },
+  "candidate_count": 65,
+  "protected_counts": { "action_required": 3 },
+  "protected_total": 3,
+  "confirmation_required": true,
+  "confirmation_hint": "Re-run with --confirm to delete the candidate categories"
+}
+```
+- Categories: `protected_finance`, `protected_travel`, `security`, `support_case`,
+  `action_required` (protected: never candidates) vs `marketing`,
+  `routine_notification` (candidates) vs `unknown`.
+- `action_required` covers subjects that ask for action or carry an alert,
+  deadline, expiry, suspension, deletion or failed payment ("Action Required",
+  "[Alert]", "expir", "suspend", "final notice", "payment failed", "需要操作",
+  "警报", "紧急", "重要", "要対応", "ご対応", "期限", "督促", "未納", ...). It is
+  checked before the marketing / routine rules, so a `noreply@` alert is
+  protected. Overridable like the other groups in
+  `<configDir>/cleanup_rules.json` (`action_required.subjects` / `senders` /
+  `domains`; arrays replace the defaults).
+- Only the newest `--limit` (default 200) emails are classified.
+  `scan_limit` echoes it; `truncated: true` (plus `scan_note`) means the folder
+  holds more than was scanned. `total_in_folder` is omitted when unknown.
+
+### cleanup --confirm
+```json
+{
+  "success": true,
+  "applied": true,
+  "categories": ["marketing", "routine_notification"],
+  "deleted_count": 65,
+  "plan": { "scanned": 200, "scan_limit": 200, "truncated": true, "scan_note": "...", "by_category": {}, "candidate_count": 65, "protected_counts": {} },
+  "results": [ { "account_id": "acc_id", "folder": "INBOX", "success": true, "deleted_count": 65 } ]
 }
 ```

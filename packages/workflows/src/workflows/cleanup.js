@@ -5,8 +5,9 @@
 //   apply(args) -> plan + delete the candidate categories via core deleteEmails,
 //                  grouped per (account, folder). DESTRUCTIVE; --confirm only.
 //
-// Protected categories (finance / travel / security / support) are never
-// proposed for deletion.
+// Protected categories (finance / travel / security / support /
+// action_required) are never proposed for deletion. Only the newest `limit`
+// emails (default 200) are scanned; the plan reports scan_limit / truncated.
 
 const { email } = require("@mail-use/core");
 const { classify, PROTECTED, CLEANUP } = require("./classify");
@@ -61,10 +62,22 @@ async function plan({ account_id = "", folder = "INBOX", limit = 200, unread_onl
   for (const [k, v] of Object.entries(protectedItems)) protectedCounts[k] = v.length;
   const candidate_count = Object.values(candidates_by_category).reduce((s, a) => s + a.length, 0);
 
+  // Only the newest `limit` emails are classified. Say so when the folder
+  // holds more, instead of letting `scanned` read like "the whole folder".
+  const scanLimit = Number(limit || 200);
+  const total = Number.isFinite(Number(list.total_in_folder)) ? Number(list.total_in_folder) : null;
+  const truncated = emails.length >= scanLimit && (total == null || total > emails.length);
+
   return {
     success: true,
     plan_only: true,
     scanned: emails.length,
+    scan_limit: scanLimit,
+    ...(total != null ? { total_in_folder: total } : {}),
+    truncated,
+    ...(truncated
+      ? { scan_note: `Classified only the newest ${emails.length}${total != null ? ` of ${total}` : ""} emails (scan limit ${scanLimit}); pass --limit (MCP: limit) to scan more.` }
+      : {}),
     folder,
     account_id,
     by_category,
@@ -124,6 +137,9 @@ async function apply({
     deleted_count,
     plan: {
       scanned: p.scanned,
+      scan_limit: p.scan_limit,
+      truncated: p.truncated,
+      ...(p.scan_note ? { scan_note: p.scan_note } : {}),
       by_category: p.by_category,
       candidate_count: p.candidate_count,
       protected_counts: p.protected_counts,

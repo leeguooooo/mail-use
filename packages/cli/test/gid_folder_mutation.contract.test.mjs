@@ -26,9 +26,9 @@ describe("review-fix: 3-part gid parsing + folder-honoring mutations", () => {
     expect(_parseRef("acc:a:b:5")).toEqual({ id: "5", account_id: "acc", folder: "a:b" });
   });
 
-  it("MCP _resolveRefs no longer mangles a 3-part gid into the account_id", () => {
+  it("MCP _resolveRefs no longer mangles a 3-part gid into the account_id", async () => {
     const { _resolveRefs } = require("../src/mcp_server.js");
-    const r = _resolveRefs(["mock_acc:Trash:401"], "");
+    const r = await _resolveRefs(["mock_acc:Trash:401"], "");
     expect(r.accountId).toBe("mock_acc"); // was "mock_acc:Trash" before the fix
     expect(r.ids).toEqual(["401"]);
   });
