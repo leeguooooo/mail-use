@@ -32,30 +32,216 @@ function splitIdArgs(rawIds) {
   return arr.flatMap((id) => String(id).split(/[\s,]+/).filter(Boolean));
 }
 
-function mixedAccountError(accountIds, accountParam = "--account-id") {
-  return `Mixed account_ids in gids (${accountIds.join(", ")}); pass ${accountParam} explicitly`;
+// A bare uid next to gids from several accounts has no account to belong to.
+function mixedAccountError(accountIds, accountParam = "--account-id", bareIds = []) {
+  return `Mixed account_ids in gids (${accountIds.join(", ")}) but bare uid(s) ${bareIds.join(", ")} carry no account; ` +
+    `use full gids (account_id:folder:uid) or pass ${accountParam} with ids of that one account`;
 }
 
+function accountMismatchError(explicit, gidAccounts, accountParam = "--account-id") {
+  return `Account mismatch: ${accountParam} ${explicit} conflicts with gid account(s) ${gidAccounts.join(", ")}; ` +
+    `drop ${accountParam} (gids are self-describing) or fix the ids`;
+}
+
+const _sameId = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+
 // Resolve input refs (gids or bare uids) plus an explicit account id to
-// { ids, accountId, refs: [{id, folder}] }. When the gids name more than one
-// account and no explicit account id is given, returns { error, error_code }
-// instead ("ambiguous_account"), for the CLI and MCP alike.
+// { ids, accountId, accountIds, mixed, refs: [{id, folder, account_id}] }.
+//
+// Gids are self-describing, so gids naming several accounts are fine: the
+// result has `mixed: true`, `accountId: ""`, and every ref carries its own
+// account_id — callers group by account (groupRefsByAccount). Only a bare uid
+// next to multi-account gids is ambiguous (error_code "ambiguous_account").
+//
+// An explicit account id applies to bare uids; a gid naming a different
+// account is an error (error_code "account_mismatch"). That check is textual
+// (case-insensitive). When the explicit value is an email address it may name
+// the gid's account, so the result carries `conflicts` instead and
+// confirmAccountConflicts() settles it — resolveEmailRefsChecked() does both.
 //
 // opts.split: split CLI-style "1,2 3" tokens (MCP passes a real array).
 // opts.accountParam: how the override is spelled in the error message.
 function resolveEmailRefs(rawIds, explicitAccountId, { split = true, accountParam = "--account-id" } = {}) {
   const flat = split ? splitIdArgs(rawIds) : (Array.isArray(rawIds) ? rawIds : [rawIds]);
-  const refs = flat.map(parseEmailRef);
-  let resolved = explicitAccountId || "";
-  const fromGids = new Set(refs.map((r) => r.account_id).filter(Boolean));
-  if (!resolved && fromGids.size === 1) resolved = [...fromGids][0];
-  else if (!resolved && fromGids.size > 1) {
-    return { ids: [], accountId: "", refs: [], error: mixedAccountError([...fromGids], accountParam), error_code: "ambiguous_account" };
+  const parsed = flat.map(parseEmailRef);
+  const explicit = String(explicitAccountId || "").trim();
+  const accountIds = [...new Set(parsed.map((r) => r.account_id).filter(Boolean))];
+
+  if (explicit) {
+    const out = {
+      ids: parsed.map((r) => r.id),
+      accountId: explicit,
+      accountIds: [explicit],
+      mixed: false,
+      refs: parsed.map((r) => ({ id: r.id, folder: r.folder || "", account_id: explicit })),
+    };
+    const conflicts = accountIds.filter((a) => !_sameId(a, explicit));
+    if (!conflicts.length) return out;
+    if (explicit.includes("@")) return { ...out, conflicts, accountParam };
+    return { ids: [], accountId: "", refs: [], error: accountMismatchError(explicit, conflicts, accountParam), error_code: "account_mismatch" };
+  }
+
+  if (accountIds.length > 1) {
+    const bare = parsed.filter((r) => !r.account_id).map((r) => r.id);
+    if (bare.length) {
+      return { ids: [], accountId: "", refs: [], error: mixedAccountError(accountIds, accountParam, bare), error_code: "ambiguous_account" };
+    }
+  }
+  const single = accountIds.length === 1 ? accountIds[0] : "";
+  return {
+    ids: parsed.map((r) => r.id),
+    accountId: single,
+    accountIds,
+    mixed: accountIds.length > 1,
+    refs: parsed.map((r) => ({ id: r.id, folder: r.folder || "", account_id: r.account_id || single })),
+  };
+}
+
+// Settle the `conflicts` resolveEmailRefs leaves when the explicit account is
+// an email address: a gid account that is the same account is fine, anything
+// else is account_mismatch. accountsApi is core's accounts namespace (or its
+// proxy).
+async function confirmAccountConflicts(accountsApi, r) {
+  if (!r || r.error || !r.conflicts) return r;
+  const { conflicts, accountParam, ...rest } = r;
+  let canonical = "";
+  try {
+    const acc = accountsApi ? await accountsApi.getAccountByIdOrEmail(r.accountId) : null;
+    canonical = acc && acc.success && acc.account ? acc.account.id : "";
+  } catch {
+    canonical = "";
+  }
+  const real = conflicts.filter((a) => !_sameId(a, canonical));
+  if (real.length) {
+    return { ids: [], accountId: "", refs: [], error: accountMismatchError(r.accountId, real, accountParam), error_code: "account_mismatch" };
+  }
+  return rest;
+}
+
+async function resolveEmailRefsChecked(accountsApi, rawIds, explicitAccountId, opts) {
+  return confirmAccountConflicts(accountsApi, resolveEmailRefs(rawIds, explicitAccountId, opts));
+}
+
+// Group refs by their account_id (insertion order); refs without one fall back
+// to fallbackAccountId. Map<accountId, refs[]>.
+function groupRefsByAccount(refs, fallbackAccountId = "") {
+  const groups = new Map();
+  for (const r of refs || []) {
+    const acc = r.account_id || fallbackAccountId || "";
+    if (!groups.has(acc)) groups.set(acc, []);
+    groups.get(acc).push(r);
+  }
+  return groups;
+}
+
+// Run fn(accountId, refs) once per account and merge the per-account results.
+// One account returns its result untouched (the pre-multi-account shape).
+// Several are flattened into results[] entries stamped with account_id (a
+// per-folder results[] inside an account result is flattened too). Sequential:
+// these are mutations, and per-account order keeps logs readable.
+async function mutateByAccount(byAccount, fn) {
+  if (byAccount.size <= 1) {
+    const [[accountId, refs] = ["", []]] = [...byAccount];
+    return fn(accountId, refs);
+  }
+  const results = [];
+  for (const [accountId, refs] of byAccount) {
+    let r;
+    try {
+      r = await fn(accountId, refs);
+    } catch (e) {
+      r = { success: false, error: (e && e.message) || "operation failed" };
+    }
+    if (r && Array.isArray(r.results) && r.folders_count) {
+      for (const sub of r.results) results.push({ account_id: accountId, ...sub });
+    } else {
+      results.push({ account_id: accountId, ...r });
+    }
   }
   return {
-    ids: refs.map((r) => r.id),
-    accountId: resolved,
-    refs: refs.map((r) => ({ id: r.id, folder: r.folder || "" })),
+    success: results.every((r) => r && r.success),
+    accounts_count: byAccount.size,
+    folders_count: results.length,
+    results,
+  };
+}
+
+// ---------- batch show across accounts ----------
+
+// Put batch-show emails back in the order the refs were requested. Each ref
+// claims the first unclaimed email with the same account, uid and (when the
+// ref names one) folder; anything unmatched keeps its relative order at the end.
+function orderShownEmails(refs, emails) {
+  const pool = (emails || []).map((e, i) => ({ e, i, used: false }));
+  const out = [];
+  for (const r of refs || []) {
+    const hit = pool.find((p) => !p.used
+      && String(p.e.id) === String(r.id)
+      && (!r.account_id || !p.e.account_id || _sameId(p.e.account_id, r.account_id))
+      && (!r.folder || !p.e.folder || _sameId(p.e.folder, r.folder)));
+    if (hit) {
+      hit.used = true;
+      out.push(hit.e);
+    }
+  }
+  for (const p of pool) if (!p.used) out.push(p.e);
+  return out;
+}
+
+// Batch show for refs that may span accounts and folders. One account: the
+// core call's response, reordered to the requested order (top-level account_id
+// kept). Several accounts: one call per account, in parallel, merged into
+// { success, emails, failed_ids, requested, returned, account_ids } — no
+// top-level account_id; each email and failed id carries its own account_id.
+// An account whose call fails outright degrades to failed_ids for its refs.
+async function showRefs(email, { refs: rawRefs, accountId = "", explicitFolder = "", baseOpts = {} }) {
+  // An explicit folder overrides every ref's own (gid) folder.
+  const refs = explicitFolder ? rawRefs.map((r) => ({ ...r, folder: explicitFolder })) : rawRefs;
+  const byAccount = groupRefsByAccount(refs, accountId);
+  const showOne = (acc, accRefs) => (explicitFolder && byAccount.size === 1
+    ? email.showEmails({ ...baseOpts, account_id: acc, email_ids: accRefs.map((r) => r.id), folder: explicitFolder })
+    : email.showEmailsResolved({
+      ...baseOpts,
+      account_id: acc,
+      refs: accRefs.map((r) => ({ id: r.id, folder: r.folder || "" })),
+    }));
+
+  if (byAccount.size <= 1) {
+    const [[acc, accRefs]] = [...byAccount];
+    const result = await showOne(acc, accRefs);
+    if (result && Array.isArray(result.emails)) result.emails = orderShownEmails(accRefs, result.emails);
+    return result;
+  }
+
+  const settled = await Promise.all([...byAccount].map(async ([acc, accRefs]) => {
+    try {
+      return { acc, accRefs, result: await showOne(acc, accRefs) };
+    } catch (e) {
+      return { acc, accRefs, result: { success: false, error: (e && e.message) || "fetch failed" } };
+    }
+  }));
+
+  const emails = [];
+  const failed_ids = [];
+  for (const { acc, accRefs, result } of settled) {
+    if (!result || !Array.isArray(result.emails)) {
+      // Whole-account failure (unknown account, connection refused, ...).
+      const error = (result && result.error) || "fetch failed";
+      for (const r of accRefs) failed_ids.push({ id: r.id, account_id: acc, ...(r.folder ? { folder: r.folder } : {}), error });
+      continue;
+    }
+    const realId = result.account_id || acc;
+    for (const e of result.emails) emails.push({ ...e, account_id: e.account_id || realId });
+    for (const f of result.failed_ids || []) failed_ids.push({ ...f, account_id: f.account_id || realId });
+  }
+  const ordered = orderShownEmails(refs, emails);
+  return {
+    success: failed_ids.length === 0,
+    emails: ordered,
+    failed_ids,
+    requested: refs.length,
+    returned: ordered.length,
+    account_ids: [...byAccount.keys()],
   };
 }
 
@@ -131,17 +317,21 @@ function _mutateCall(email, { operation, emailIds, folder, accountId, markAs, pe
 
 // Mutate explicit id refs honoring each ref's gid folder. Bare uids fall back to
 // defaultFolder so `--folder` keeps working.
+// Gids from several accounts are grouped per account first (mutateByAccount).
 function applyIdRefMutation(email, { operation, refs, accountId, defaultFolder, markAs, opts, dryRun }) {
-  return mutateByFolder(groupRefsByFolder(refs, defaultFolder), (emailIds, folder) => _mutateCall(email, {
-    operation,
-    emailIds,
-    folder,
-    accountId,
-    markAs,
-    permanent: opts.permanent,
-    trashFolder: opts.trashFolder,
-    dryRun,
-  }));
+  return mutateByAccount(groupRefsByAccount(refs, accountId), (acc, accRefs) => mutateByFolder(
+    groupRefsByFolder(accRefs, defaultFolder),
+    (emailIds, folder) => _mutateCall(email, {
+      operation,
+      emailIds,
+      folder,
+      accountId: acc,
+      markAs,
+      permanent: opts.permanent,
+      trashFolder: opts.trashFolder,
+      dryRun,
+    }),
+  ));
 }
 
 // ---------- filter (--from/--subject) targets ----------
@@ -212,7 +402,11 @@ function filteredDryRunResult({ operation, targets, groups, markAs, permanent, s
 // by default (your own Sent/Drafts, already-Trashed, Spam). Matched on the last
 // path segment, case-insensitive.
 const SPECIAL_MUTATION_FOLDER_RE = /^(sent|sent items|drafts?|junk|spam|trash|deleted|deleted items|bin|outbox)$/i;
-function isSpecialMutationFolder(name) {
+// Special-use roles (RFC 6154) that count as special regardless of the folder's
+// (possibly localized) name, e.g. Gmail's "[Gmail]/已发邮件" is \Sent.
+const SPECIAL_MUTATION_ROLES = new Set(["\\Sent", "\\Drafts", "\\Junk", "\\Trash"]);
+function isSpecialMutationFolder(name, specialUse = "") {
+  if (SPECIAL_MUTATION_ROLES.has(String(specialUse || ""))) return true;
   const seg = String(name || "").split("/").pop().trim();
   return SPECIAL_MUTATION_FOLDER_RE.test(seg);
 }
@@ -228,6 +422,10 @@ async function searchFilteredEmailTargets(email, opts) {
     folder: searchFolder,
     limit: 1000,
     timeout_ms: 60000, // bound cross-folder filter scans so a mutation can't hang forever
+    // Gmail label aliases (INBOX + Important + Starred) are still collapsed to
+    // one target by search, so a message is not marked/trashed twice; genuine
+    // copies on other servers stay separate so every copy is acted on.
+    dedupe: false,
   });
   if (!result || !result.success) return { result, targets: [], groups: new Map(), skipped_special_folders: [] };
   let targets = (result.emails || []).filter((e) => String(e.uid || e.id || "").trim());
@@ -237,7 +435,7 @@ async function searchFilteredEmailTargets(email, opts) {
   const skipped = new Set();
   if (opts.allFolders && !opts.includeSpecial) {
     targets = targets.filter((e) => {
-      if (isSpecialMutationFolder(e.folder)) {
+      if (isSpecialMutationFolder(e.folder, e.special_use)) {
         skipped.add(e.folder);
         return false;
       }
@@ -297,7 +495,14 @@ module.exports = {
   parseEmailRef,
   splitIdArgs,
   mixedAccountError,
+  accountMismatchError,
   resolveEmailRefs,
+  confirmAccountConflicts,
+  resolveEmailRefsChecked,
+  groupRefsByAccount,
+  mutateByAccount,
+  orderShownEmails,
+  showRefs,
   emailIdArgs,
   hasEmailTargets,
   groupRefsByFolder,

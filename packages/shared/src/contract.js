@@ -118,6 +118,10 @@ const COMPACT_TOP_LEVEL_KEEP = new Set([
   "unread_as_of",
   "cache_age_seconds",
   "cache_stale",
+  // Coverage of a partial cache (newest N per folder): lets a compact caller
+  // tell a cached page that may be missing older mail.
+  "cache_complete",
+  "cache_covers_from",
   "hint",
 ]);
 
@@ -214,6 +218,7 @@ const ERROR_CODE_RULES = [
   [/is not a valid date/i, "invalid_date"],
   [/must be a non-negative number|exceeds MAILBOX_MAX_LIMIT/i, "invalid_limit"],
   [/^Mixed account_ids/i, "ambiguous_account"],
+  [/^Account mismatch/i, "account_mismatch"],
   [/exceeds MAILBOX_MAX_BODY_FILE_BYTES|exceeds MAILBOX_MAX_MESSAGE_BYTES/i, "size_limit"],
   [/AUTHENTICATIONFAILED|Invalid credentials|535[\s-]/i, "auth_failed"],
   // Now the generic argument-validation catch-all.

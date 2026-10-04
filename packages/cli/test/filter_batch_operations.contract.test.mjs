@@ -141,6 +141,7 @@ describe("filter batch operations contract", () => {
       folder: "INBOX",
       limit: 1000,
       timeout_ms: 60000,
+      dedupe: false,
     });
     expect(email.deleteEmails).toHaveBeenCalledTimes(1);
     expect(email.deleteEmails).toHaveBeenCalledWith(
@@ -197,6 +198,24 @@ describe("filter batch operations contract", () => {
         dry_run: false,
       })
     );
+  });
+
+  it("--all-folders skips Sent/Trash by special-use role even when the folder name is localized", async () => {
+    const rows = [
+      { uid: "5709", id: "5709", subject: "a", from: "me@gmail.com", account_id: "gm", folder: "INBOX", special_use: "\\Inbox" },
+      { uid: "30", id: "30", subject: "b", from: "me@gmail.com", account_id: "gm", folder: "[Gmail]/已发邮件", special_use: "\\Sent" },
+      { uid: "8", id: "8", subject: "c", from: "me@gmail.com", account_id: "gm", folder: "[Gmail]/已删除邮件", special_use: "\\Trash" },
+    ];
+    const { email } = makeEmailMock({
+      searchResult: async () => ({ success: true, emails: rows, total_found: rows.length }),
+    });
+
+    const r = await runCli(["email", "delete", "--from", "me", "--all-folders", "--account-id", "gm"], email);
+
+    expect(r.code).toBe(0);
+    expect(email.searchEmails).toHaveBeenCalledWith(expect.objectContaining({ folder: "all", dedupe: false }));
+    expect(r.payload).toMatchObject({ dry_run: true, would_target_count: 1 });
+    expect(r.payload.skipped_special_folders.sort()).toEqual(["[Gmail]/已删除邮件", "[Gmail]/已发邮件"]);
   });
 
   it("requires --confirm when filters match more than 100 emails", async () => {

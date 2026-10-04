@@ -5,6 +5,17 @@
 
 const { _out } = require("../cli/render");
 
+// One status line per account that has synced at all: its last error (with the
+// last success, if any), or just its last success.
+function _syncAccountLines(accounts) {
+  const lines = [];
+  for (const [id, a] of Object.entries(accounts || {})) {
+    if (a && a.last_error) lines.push(`  ${id}: last_error=${a.last_error} (at ${a.last_error_at})${a.last_ok_at ? ` last_ok_at=${a.last_ok_at}` : ""}\n`);
+    else if (a && a.last_ok_at) lines.push(`  ${id}: last_ok_at=${a.last_ok_at}\n`);
+  }
+  return lines;
+}
+
 function register(program, ctx) {
   const daemonCmd = program.command("daemon").description("Persistent IMAP daemon (reuses connections across CLI calls)");
   daemonCmd
@@ -88,7 +99,8 @@ function register(program, ctx) {
           _out("\nsync:\n");
           _out(`  attempted=${r.sync.syncs_attempted} ok=${r.sync.syncs_ok} failed=${r.sync.syncs_failed}\n`);
           if (r.sync.last_sync_at) _out(`  last_sync_at=${r.sync.last_sync_at}\n`);
-          if (r.sync.last_sync_error) _out(`  last_sync_error=${r.sync.last_sync_error}\n`);
+          if (r.sync.last_sync_error) _out(`  last_sync_error=${r.sync.last_sync_error}${r.sync.last_sync_error_at ? ` (at ${r.sync.last_sync_error_at})` : ""}\n`);
+          for (const line of _syncAccountLines(r.sync.accounts)) _out(line);
           if (r.sync.prewarm) _out(`  prewarm=${r.sync.prewarm.completed}/${r.sync.prewarm.started} (${r.sync.prewarm.failed} failed)\n`);
         }
         if (r.update && r.update.update_available) {
@@ -120,4 +132,4 @@ function register(program, ctx) {
     });
 }
 
-module.exports = { register };
+module.exports = { register, _syncAccountLines };

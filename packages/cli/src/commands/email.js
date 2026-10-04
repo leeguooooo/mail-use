@@ -6,6 +6,7 @@ const { _out, _printEmailList, _printFolderList } = require("../cli/render");
 const {
   _validatePaging, _validateDateOpt, _readBodyFile, _collectOption, _resolveLocalAttachments,
   _attachmentPreview, _mailAttachments, _explicitOptionValue,
+  _decodeInlineBody, BODY_UNESCAPED_WARNING,
 } = require("../cli/options");
 const targets = require("../cli/targets");
 
@@ -34,6 +35,23 @@ function _markConfirmationRequired(result, opts, dryRun, hint = targets.CONFIRM_
   }
 }
 
+// Inline --body as typed on a shell: literal "\n" with no real line break is
+// decoded to newlines unless --literal-body (see _decodeInlineBody). Returns
+// { body, warnings }.
+function _inlineBody(opts) {
+  const raw = opts.body || "";
+  if (opts.literalBody) return { body: raw, warnings: [] };
+  const d = _decodeInlineBody(raw);
+  return { body: d.body, warnings: d.unescaped ? [BODY_UNESCAPED_WARNING] : [] };
+}
+
+function _withWarnings(result, warnings) {
+  if (warnings.length && result && typeof result === "object") {
+    result.warnings = [...(Array.isArray(result.warnings) ? result.warnings : []), ...warnings];
+  }
+  return result;
+}
+
 // --body / --body-file / --attachment for send and reply. Exits on bad usage.
 function _readComposeInput(ctx, opts) {
   const hasBody = typeof opts.body === "string" && opts.body.length;
@@ -42,8 +60,9 @@ function _readComposeInput(ctx, opts) {
     ctx.usage("Specify exactly one of --body/--body-file");
   }
 
-  let body = opts.body || "";
+  let { body, warnings } = _inlineBody(opts);
   if (opts.bodyFile) {
+    warnings = [];
     try {
       body = _readBodyFile(opts.bodyFile);
     } catch (e) {
@@ -56,7 +75,7 @@ function _readComposeInput(ctx, opts) {
   } catch (e) {
     ctx.usage(e && e.message ? e.message : "Failed to read attachment");
   }
-  return { body, attachments };
+  return { body, attachments, warnings };
 }
 
 // --date-from / --date-to validation + relative-shortcut expansion.
@@ -94,7 +113,7 @@ async function _mutate(ctx, { operation, label, ids, opts, markAs }) {
     return ctx.respond(result, label);
   }
 
-  const refs = targets.resolveEmailRefs(targets.emailIdArgs(ids), opts.accountId);
+  const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, targets.emailIdArgs(ids), opts.accountId);
   if (refs.error) {
     return ctx.usage(refs.error);
   }
@@ -111,6 +130,10 @@ async function _mutate(ctx, { operation, label, ids, opts, markAs }) {
   _markConfirmationRequired(result, opts, dryRun);
   return ctx.respond(result, label);
 }
+
+const BODY_HELP = "Body text. A one-line value with literal \\n (shell quotes do not expand it) is sent with real line breaks";
+const BODY_FILE_HELP = "Read the body from a file, or '-' for stdin (preferred for multi-line text)";
+const LITERAL_BODY_HELP = "Send --body exactly as given (do not turn literal \\n into line breaks)";
 
 function register(program, ctx) {
   const { email } = ctx.proxies;
@@ -278,7 +301,7 @@ function register(program, ctx) {
         bodyMax = 400;
         if (!htmlMax && includeHtml) htmlMax = 2000;
       }
-      const refs = targets.resolveEmailRefs(emailIds, opts.accountId);
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, emailIds, opts.accountId);
       if (refs.error) ctx.usage(refs.error);
       const ids = refs.ids;
       const explicitFolder = opts.folder; // undefined unless the user passed --folder
@@ -298,10 +321,15 @@ function register(program, ctx) {
         ctx.respond(result, "email show");
       }
       // Batch: an explicit --folder applies to all; otherwise resolve each id's
-      // folder from its gid/cache so results that span folders just work.
-      const result = explicitFolder
-        ? await email.showEmails({ email_ids: ids, folder: explicitFolder, ...baseOpts })
-        : await email.showEmailsResolved({ refs: refs.refs, ...baseOpts });
+      // folder from its gid/cache so results that span folders just work. Gids
+      // from several accounts are fetched per account and merged in the
+      // requested order (top-level account_ids[] instead of account_id).
+      const result = await targets.showRefs(email, {
+        refs: refs.refs,
+        accountId: refs.accountId,
+        explicitFolder: explicitFolder || "",
+        baseOpts,
+      });
       if (opts.extractCode) _attachExtractedCodes(result);
       ctx.respond(result, "email show");
     });
@@ -367,8 +395,9 @@ function register(program, ctx) {
     .description("Send an email")
     .requiredOption("--to <to...>")
     .requiredOption("--subject <s>")
-    .option("--body <text>")
-    .option("--body-file <path>")
+    .option("--body <text>", BODY_HELP)
+    .option("--body-file <path>", BODY_FILE_HELP)
+    .option("--literal-body", LITERAL_BODY_HELP)
     .option("--cc <cc...>")
     .option("--bcc <bcc...>")
     .option("--attachment <path>", "Attach a local file; repeat for multiple files", _collectOption, [])
@@ -377,7 +406,7 @@ function register(program, ctx) {
     .option("--confirm", "Actually send (default: dry-run)")
     .option("--dry-run")
     .action(async (opts) => {
-      const { body, attachments } = _readComposeInput(ctx, opts);
+      const { body, attachments, warnings } = _readComposeInput(ctx, opts);
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       if (dryRun) {
         const result = {
@@ -398,7 +427,7 @@ function register(program, ctx) {
           confirmation_required: true,
           confirmation_hint: "Re-run with --confirm to actually send",
         };
-        ctx.respond(result, "email send");
+        ctx.respond(_withWarnings(result, warnings), "email send");
       }
       const result = await email.sendEmail({
         to: opts.to,
@@ -410,15 +439,16 @@ function register(program, ctx) {
         is_html: Boolean(opts.isHtml),
         attachments: _mailAttachments(attachments),
       });
-      ctx.respond(result, "email send");
+      ctx.respond(_withWarnings(result, warnings), "email send");
     });
 
   emailCmd
     .command("reply")
     .description("Reply to an email")
     .argument("<email_id>")
-    .option("--body <text>")
-    .option("--body-file <path>")
+    .option("--body <text>", BODY_HELP)
+    .option("--body-file <path>", BODY_FILE_HELP)
+    .option("--literal-body", LITERAL_BODY_HELP)
     .option("--reply-all")
     .option("--folder <name>", "Folder", "INBOX")
     .option("--attachment <path>", "Attach a local file; repeat for multiple files", _collectOption, [])
@@ -427,7 +457,7 @@ function register(program, ctx) {
     .option("--confirm", "Actually send (default: dry-run)")
     .option("--dry-run")
     .action(async (emailId, opts, cmd) => {
-      const { body, attachments } = _readComposeInput(ctx, opts);
+      const { body, attachments, warnings } = _readComposeInput(ctx, opts);
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const ref = targets.parseEmailRef(emailId);
       const explicitFolder = _explicitOptionValue(cmd, opts, "folder");
@@ -441,7 +471,7 @@ function register(program, ctx) {
         attachments: _mailAttachments(attachments),
         dry_run: dryRun,
       });
-      ctx.respond(result, "email reply");
+      ctx.respond(_withWarnings(result, warnings), "email reply");
     });
 
   emailCmd
@@ -449,7 +479,8 @@ function register(program, ctx) {
     .description("Forward an email")
     .argument("<email_id>")
     .requiredOption("--to <to...>")
-    .option("--body <text>")
+    .option("--body <text>", BODY_HELP)
+    .option("--literal-body", LITERAL_BODY_HELP)
     .option("--folder <name>", "Folder", "INBOX")
     .option("--no-attachments")
     .option("--account-id <id>")
@@ -459,16 +490,17 @@ function register(program, ctx) {
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
       const ref = targets.parseEmailRef(emailId);
       const explicitFolder = _explicitOptionValue(cmd, opts, "folder");
+      const { body, warnings } = _inlineBody(opts);
       const result = await email.forwardEmail({
         email_id: ref.id,
         to: opts.to,
-        body: opts.body || "",
+        body,
         folder: explicitFolder || ref.folder || opts.folder,
         no_attachments: Boolean(opts.noAttachments),
         account_id: opts.accountId || ref.account_id || "",
         dry_run: dryRun,
       });
-      ctx.respond(result, "email forward");
+      ctx.respond(_withWarnings(result, warnings), "email forward");
     });
 
   emailCmd
@@ -487,7 +519,7 @@ function register(program, ctx) {
     .option("--account-id <id>", "Required if email_id is a bare UID")
     .option("--folder <name>", "Folder", "INBOX")
     .action(async (emailId, opts, cmd) => {
-      const refs = targets.resolveEmailRefs([emailId], opts.accountId);
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, [emailId], opts.accountId);
       if (refs.error || !refs.accountId) {
         ctx.usage(refs.error || "Missing --account-id (or pass a gid like account_id:uid)");
       }
@@ -514,7 +546,7 @@ function register(program, ctx) {
       if ((set && unset) || (!set && !unset)) {
         ctx.usage("Specify exactly one of --set/--unset");
       }
-      const refs = targets.resolveEmailRefs([emailId], opts.accountId);
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, [emailId], opts.accountId);
       if (refs.error || !refs.accountId) {
         ctx.usage(refs.error || "Missing --account-id (or pass a gid like account_id:uid)");
       }
@@ -542,24 +574,28 @@ function register(program, ctx) {
     .option("--confirm", "Apply changes (default: dry-run)")
     .option("--dry-run")
     .action(async (ids, opts, cmd) => {
-      const refs = targets.resolveEmailRefs(ids, opts.accountId);
-      if (refs.error || !refs.accountId) {
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, ids, opts.accountId);
+      if (refs.error || (!refs.accountId && !refs.mixed)) {
         ctx.usage(refs.error || "Missing --account-id (or pass gids like account_id:uid)");
       }
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
-      // Gids from `search --folder all` can span folders: move each folder's
-      // UIDs out of that folder. An explicit --source-folder overrides them.
+      // Gids from `search --folder all` can span folders (and accounts): move
+      // each folder's UIDs out of that folder, per account. An explicit
+      // --source-folder overrides the gid folders.
       const explicitSource = _explicitOptionValue(cmd, opts, "sourceFolder");
-      const groups = explicitSource
-        ? new Map([[explicitSource, refs.ids]])
-        : targets.groupRefsByFolder(refs.refs, opts.sourceFolder);
-      const result = await targets.mutateByFolder(groups, (emailIds, folder) => email.moveEmails({
-        email_ids: emailIds,
-        target_folder: opts.targetFolder,
-        source_folder: folder,
-        account_id: refs.accountId,
-        dry_run: dryRun,
-      }));
+      const byAccount = targets.groupRefsByAccount(refs.refs, refs.accountId);
+      const result = await targets.mutateByAccount(byAccount, (acc, accRefs) => targets.mutateByFolder(
+        explicitSource
+          ? new Map([[explicitSource, accRefs.map((r) => r.id)]])
+          : targets.groupRefsByFolder(accRefs, opts.sourceFolder),
+        (emailIds, folder) => email.moveEmails({
+          email_ids: emailIds,
+          target_folder: opts.targetFolder,
+          source_folder: folder,
+          account_id: acc,
+          dry_run: dryRun,
+        }),
+      ));
       _markConfirmationRequired(result, opts, dryRun);
       ctx.respond(result, "email move");
     });

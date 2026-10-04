@@ -91,6 +91,8 @@ Common shape (superset):
   "from_cache": true,
   "unread_as_of": "2026-06-11T00:00:00.000Z",
   "cache_age_seconds": 42,
+  "cache_complete": false,
+  "cache_covers_from": "2026-08-14 09:12:00",
   "hint": "served from cache (age 42s); pass --live (or use_cache=false) to force a live IMAP fetch"
 }
 ```
@@ -111,6 +113,24 @@ Notes:
   - Self-heal: a thin **and** stale (older than `MAILBOX_CACHE_FRESH_SECONDS`,
     default 120s; `0` disables) cached read auto-falls back to live IMAP, so a
     just-arrived email is picked up without an explicit `--live`.
+  - Coverage (cached reads only): the daemon caches only the newest N messages
+    per folder. `cache_complete` is `true` when every scoped folder is fully
+    cached, `false` when the server folder holds more than the cache, `null`
+    when there is no folder snapshot. `cache_covers_from` (`YYYY-MM-DD HH:MM:SS`,
+    or `null` when complete/unknown/empty) is the date from which the partial
+    cache is known to be complete. The cache window is by UID while pages sort
+    by date, so this is derived conservatively: the date of the lowest-UID
+    cached message (uncached mail has lower UIDs, so arrived no later), never
+    earlier than the oldest cached date.
+  - Coverage self-heal: on a partial cache, a cached page is served only when
+    what it answers lies inside the covered range — the `--since`/`--date-from`
+    window starts at or after `cache_covers_from`, or the page is **full** and
+    its oldest row is at or after `cache_covers_from` (the common "newest N"
+    read). Otherwise (a thin page with no or an earlier window, `--offset`
+    paging past the cached rows, a full page reaching below the boundary) it
+    auto-falls back to live IMAP **however fresh the cache is**. Unread-only
+    reads stay on the cache when every unread message is cached.
+    `MAILBOX_CACHE_FRESH_SECONDS=0` disables this fallback too.
 
 ### email search
 Two main variants (optimized vs fallback). Keep a union of fields:
@@ -133,10 +153,12 @@ Two main variants (optimized vs fallback). Keep a union of fields:
       "account": "user@example.com",
       "account_id": "acc_id",
       "folder": "INBOX",
+      "special_use": "\\Inbox",
       "preview": "optional body preview"
     }
   ],
   "total_found": 200,
+  "duplicates_removed": 13,
   "displayed": 50,
   "accounts_count": 1,
   "offset": 0,
@@ -151,6 +173,28 @@ Two main variants (optimized vs fallback). Keep a union of fields:
   "partial_success": true
 }
 ```
+Notes:
+- `--folder all` returns **one row per message**. Gmail exposes labels as folders,
+  so the same message is listed under INBOX, `[Gmail]/Important`, Starred and
+  every user label; rows are collapsed per account by the server email id
+  (Gmail `X-GM-MSGID` / RFC 8474 `EMAILID`), else `Message-ID`. Rows with
+  neither are never merged (sender+date+subject is too weak an identity). The
+  surviving row is the most canonical folder: INBOX, then
+  user folders/labels, then Archive/Sent/Drafts/Junk/Trash, then Important /
+  Starred / All Mail. Dedupe happens before `limit`/`offset` (folders are
+  re-fetched with a larger cap when aliases would leave the page short), and
+  `total_found` excludes the collapsed rows. `duplicates_removed` (only when
+  > 0) counts them. `total_found_is_upper_bound: true` (only when set) means a
+  folder held more matches than were fetched, so aliases beyond the cap could
+  not be subtracted and `total_found` may over-count.
+  A single-folder search is never deduped.
+- `special_use` (only on `--folder all` rows whose folder has one) is the
+  folder's RFC 6154 role (`\Inbox`, `\Sent`, `\Trash`, `\Important`, ...), so
+  callers can recognise localized names like `[Gmail]/已发邮件`.
+- Filtered `mark`/`delete --all-folders` searches with dedupe off for ordinary
+  IMAP servers (a real copy in two folders is two messages, and each is acted
+  on), but Gmail label aliases are still collapsed so one message is never
+  marked or trashed twice. Its special-folder skip uses `special_use` too.
 
 ### email show
 ```json
@@ -189,6 +233,33 @@ Notes:
   subject+body (bare 4–8 digit codes plus prefixed `LL-DDDDDD` forms like
   `QB-046193`), ordered as found and de-duplicated. On a batch `show` the array
   is attached per email. Survives `--format compact`.
+
+Batch (`email show <id> <id> ...`, MCP `email_show` with several `ids`):
+```json
+{
+  "success": false,
+  "emails": [ { "id": "123", "gid": "acc_id:INBOX:123", "folder": "INBOX", "subject": "Hello", "...": "..." } ],
+  "failed_ids": [ { "id": "999", "error": "not_found" } ],
+  "requested": 2,
+  "returned": 1,
+  "account_id": "acc_id"
+}
+```
+- `emails[]` follows the order the ids were requested in.
+- Gids are self-describing (`account_id:folder:uid`), so one call may mix
+  accounts and folders. Ids are grouped per account (fetched in parallel) and
+  per folder, then merged into one response. When the gids name **more than one
+  account**, the top-level `account_id` is **omitted** and replaced by
+  `account_ids: ["acc_a", "acc_b"]` (a new field, so a reader of `account_id`
+  never sees its type change); every `emails[]` and `failed_ids[]` entry then
+  carries its own `account_id`. An account whose fetch fails outright (unknown
+  account, connection error) degrades to `failed_ids` for its ids.
+- `success` is `false` (exit 1) when any id failed; the found emails are still
+  returned.
+- Errors (exit 2): `ambiguous_account` — a bare uid next to gids from several
+  accounts (use full gids). `account_mismatch` — `--account-id` (MCP:
+  `account_id`) names a different account than a gid; an email address that
+  names the gid's account is accepted.
 
 ### email mark
 Dry-run:
@@ -242,6 +313,17 @@ Batch or single:
 ```
 
 ### email send / reply / forward
+Body input:
+- `--body-file <path>` (send/reply) reads the body from a file; `--body-file -`
+  reads stdin. This is the robust way to pass multi-line text.
+- An inline `--body` (send/reply/forward) that contains literal `\n` (backslash +
+  n, which shell quotes do not expand) and **no** real line break is sent with
+  `\n` / `\r\n` turned into line breaks, and the result (dry-run and sent)
+  carries `warnings: ["--body had literal \\n sequences ..."]`. `--literal-body`
+  sends the value as typed. A body that already has real newlines, an escaped
+  `\\n`, and `--body-file` input are never rewritten. MCP `email_send` takes a
+  JSON string and sends it byte-for-byte.
+
 Default dry-run for send:
 ```json
 {
@@ -385,6 +467,28 @@ On error: `{"success": false, "error": "...", "from": "user@example.com"}`.
   "failed_ids": []
 }
 ```
+
+### Ids across folders / accounts (mark, delete, move)
+`email mark` / `email delete` / `email move` (and MCP `email_mark` /
+`email_delete` / `email_move`) group explicit ids by account, then by folder
+(the gid's folder; an explicit `--folder` / `--source-folder` wins). One group
+returns the per-command shape above, stamped with `folder`. Several groups:
+```json
+{
+  "success": true,
+  "accounts_count": 2,
+  "folders_count": 3,
+  "results": [
+    { "account_id": "acc_a", "folder": "INBOX", "success": true, "dry_run": true, "email_ids": ["1"], "...": "..." },
+    { "account_id": "acc_b", "folder": "INBOX", "success": true, "dry_run": true, "email_ids": ["2"], "...": "..." },
+    { "account_id": "acc_b", "folder": "Trash", "success": true, "dry_run": true, "email_ids": ["3"], "...": "..." }
+  ]
+}
+```
+`accounts_count` is present only when the ids span accounts (one account with
+several folders reports `folders_count` + `results` alone). The same
+`ambiguous_account` / `account_mismatch` errors as `email show` apply
+(`email flag` takes one id and can only hit `account_mismatch`).
 
 ## sync
 
@@ -547,5 +651,57 @@ Single account (`--account-id`):
     "needs_attention": 0
   },
   "generated_at": "2025-01-01T00:00:00Z"
+}
+```
+
+## cleanup
+
+### cleanup (plan, default)
+```json
+{
+  "success": true,
+  "plan_only": true,
+  "scanned": 200,
+  "scan_limit": 200,
+  "total_in_folder": 4312,
+  "truncated": true,
+  "scan_note": "Classified only the newest 200 of 4312 emails (scan limit 200); pass --limit (MCP: limit) to scan more.",
+  "folder": "INBOX",
+  "account_id": "",
+  "by_category": { "marketing": 40, "routine_notification": 25, "action_required": 3, "unknown": 132 },
+  "candidates_by_category": {
+    "marketing": [ { "id": "1", "gid": "acc_id:INBOX:1", "account_id": "acc_id", "folder": "INBOX", "from": "...", "subject": "...", "date": "...", "unread": false } ]
+  },
+  "candidate_count": 65,
+  "protected_counts": { "action_required": 3 },
+  "protected_total": 3,
+  "confirmation_required": true,
+  "confirmation_hint": "Re-run with --confirm to delete the candidate categories"
+}
+```
+- Categories: `protected_finance`, `protected_travel`, `security`, `support_case`,
+  `action_required` (protected: never candidates) vs `marketing`,
+  `routine_notification` (candidates) vs `unknown`.
+- `action_required` covers subjects that ask for action or carry an alert,
+  deadline, expiry, suspension, deletion or failed payment ("Action Required",
+  "[Alert]", "expir", "suspend", "final notice", "payment failed", "需要操作",
+  "警报", "紧急", "重要", "要対応", "ご対応", "期限", "督促", "未納", ...). It is
+  checked before the marketing / routine rules, so a `noreply@` alert is
+  protected. Overridable like the other groups in
+  `<configDir>/cleanup_rules.json` (`action_required.subjects` / `senders` /
+  `domains`; arrays replace the defaults).
+- Only the newest `--limit` (default 200) emails are classified.
+  `scan_limit` echoes it; `truncated: true` (plus `scan_note`) means the folder
+  holds more than was scanned. `total_in_folder` is omitted when unknown.
+
+### cleanup --confirm
+```json
+{
+  "success": true,
+  "applied": true,
+  "categories": ["marketing", "routine_notification"],
+  "deleted_count": 65,
+  "plan": { "scanned": 200, "scan_limit": 200, "truncated": true, "scan_note": "...", "by_category": {}, "candidate_count": 65, "protected_counts": {} },
+  "results": [ { "account_id": "acc_id", "folder": "INBOX", "success": true, "deleted_count": 65 } ]
 }
 ```

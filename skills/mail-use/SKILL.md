@@ -146,7 +146,7 @@ mail-use email search --query inv --account-id <id> --folder INBOX --limit 20 --
 # Read one or many emails (AI-friendly defaults: text only, capped 2000 chars, URLs stripped,
 # HTML excluded; HTML-only mail is auto-converted to a text body — see body_source).
 mail-use email show <gid> --json                    # gid = "<account_id>:<folder>:<uid>"
-mail-use email show <gid1> <gid2> <gid3> --json     # batch — one IMAP connection, spans folders
+mail-use email show <gid1> <gid2> <gid3> --json     # batch — spans folders AND accounts, keeps request order
 mail-use email show <gid> --full --json             # raw HTML + uncapped + URLs (rarely needed)
 mail-use email show <gid> --text-only --json        # force no HTML (alias of --no-html)
 mail-use email show <gid> --html-max-len 0 --json   # 0 = strip HTML, -1 = unlimited, >0 = cap
@@ -156,8 +156,18 @@ mail-use email folders --account-id <id> --json
 ```
 
 The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` opens the
-right mailbox with no `--folder` — even for results from `search --folder all`. The legacy
+right mailbox with no `--folder` — even for results from `search --folder all`. `--folder all`
+returns each message **once**: Gmail labels (INBOX + Important + Starred + user labels) are
+collapsed to the most canonical folder (INBOX first), and `duplicates_removed` says how many
+alias rows were dropped. Rows with no email id / Message-ID are never merged;
+`total_found_is_upper_bound: true` means `total_found` may over-count (aliases past a folder's fetch cap). The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
+Gids from **different accounts** can go in one `show` call (e.g. straight from `email recent`):
+they are fetched per account in parallel and merged in the order requested; the response then
+has `account_ids: [...]` instead of a top-level `account_id`, and each email carries its own
+`account_id`. Don't add `--account-id` for gids — if it names a different account than a gid
+the call fails with `account_mismatch`; a bare uid mixed with multi-account gids fails with
+`ambiguous_account`.
 
 ### Mutate (all dry-run by default)
 
@@ -167,6 +177,14 @@ mail-use email delete <gid> --confirm --json        # default moves to Trash; pa
 mail-use email flag <gid> --set --confirm --json
 mail-use email move <gid1> <gid2> --target-folder Archive --confirm --json
 mail-use email send --to a@b.com --subject hi --body "..." --confirm --json
+# Multi-line body: pipe it on stdin (shell quotes do NOT turn "\n" into a newline).
+# A one-line --body with literal \n is auto-converted to line breaks (+ a warning);
+# --literal-body opts out.
+mail-use email send --to a@b.com --subject hi --body-file - --confirm --json <<'BODY'
+Hello,
+
+Thanks!
+BODY
 
 # Filtered batch mark/delete by sender/subject (no need to list+collect ids first):
 mail-use email delete --from newsletter@shop.com --confirm --json
@@ -175,11 +193,14 @@ mail-use email delete --from spam@x.com --all-folders --confirm --json   # span 
 ```
 
 `gid`-based and filtered mutations are **folder-aware**: a 3-part gid mutates in *its* folder
-(not INBOX), and `--from/--subject` matches carry their folder. The dry-run preview includes a
+(not INBOX) and *its* account — gids from several accounts in one `mark`/`delete`/`move` are
+grouped per account + folder (`results[]` entries carry `account_id` + `folder`) — and
+`--from/--subject` matches carry their folder. The dry-run preview includes a
 `groups` breakdown (per `account_id` + `folder`, with sample subjects) so you can eyeball what
 will change before `--confirm`. Filters matching >100 emails require `--confirm`.
 
-**Safety:** `--all-folders` skips special-use folders (Sent / Drafts / Junk / Trash) by
+**Safety:** `--all-folders` skips special-use folders (Sent / Drafts / Junk / Trash, recognised
+by their IMAP special-use role, so localized names like `[Gmail]/已发邮件` count) by
 default — pass `--include-special` to include them. Without `--confirm`, every destructive
 command returns a JSON dry-run preview and changes nothing.
 
@@ -194,10 +215,19 @@ mail-use cleanup --categories marketing --confirm --json   # only one category
 ```
 
 `cleanup` buckets each email into `protected_finance` / `protected_travel` / `security` /
-`support_case` (never deleted) vs `marketing` / `routine_notification` (cleanup candidates) vs
-`unknown`. Rules are sender/domain/subject based; override the allowlists via
-`<configDir>/cleanup_rules.json`. The plan reports `by_category`, `candidates_by_category`, and
-`protected_counts`; `--confirm` pipes the candidate categories into `email delete`.
+`support_case` / `action_required` (never deleted) vs `marketing` / `routine_notification`
+(cleanup candidates) vs `unknown`. `action_required` catches subjects that ask for action or
+carry an alert / deadline / expiry / suspension / deletion / failed payment ("Action Required",
+"[Alert]", "expir", "final notice", "需要操作", "警报", "紧急", "要対応", "期限", "督促", ...) —
+even from `noreply@` senders, so e.g. a Cloudflare "[需要操作] 恢复 … 的名称服务器" is never
+deleted. Rules are sender/domain/subject based; override the allowlists via
+`<configDir>/cleanup_rules.json` (arrays replace the defaults). The plan reports `by_category`,
+`candidates_by_category`, and `protected_counts`; `--confirm` pipes the candidate categories
+into `email delete`. Still skim the candidates before `--confirm` — the rules are heuristics.
+
+Only the newest `--limit` emails (default 200) are scanned. The plan says so: `scan_limit`,
+and `truncated: true` + `scan_note` when the folder holds more (`total_in_folder`). Raise
+`--limit` (max `MAILBOX_MAX_LIMIT`, default 1000) to cover more.
 
 ### Discover the surface
 
@@ -211,7 +241,7 @@ mail-use <cmd> --help --json   # structured help: { name, description, options, 
 - **`--format compact` (global flag)** projects each email to just `{id, gid, account_id, folder, date, from, subject, unread, has_attachments, body_text_preview}` — the lightest useful shape for scanning, and it includes the 3-part `gid` so you can chain straight into `email show <gid>`. `--format jsonl` emits one JSON object per line (composable: `--format compact,jsonl`). `agent` is an alias of `compact`.
 - **`--lean` (global flag, before subcommand)** strips ~10 noisy/duplicate top-level fields and per-email duplicates. Typical response shrinks by ~30%.
 - **`--with-preview <N>`** on `email list / email search` fetches a body snippet alongside the envelope — saves one `email show` per email.
-- **Batch `email show <gid1> <gid2> ...`** reuses one IMAP connection (and spans folders). Use it whenever you need ≥2 emails.
+- **Batch `email show <gid1> <gid2> ...`** reuses one IMAP connection per account (and spans folders and accounts). Use it whenever you need ≥2 emails.
 - **`gid`** (returned in every list/search/show response) is the global ID `account_id:folder:uid` — pass it instead of bare UID + `--account-id`, and `show`/mutate auto-target its folder.
 - **Relative date shortcuts** (on `--since` / `--date-from`): `7d` (7 days ago), `3w`, `1mo`, `1y`, `12h`, `30m`, `today`, `yesterday`, `last-week`, `last-month`. ISO 8601 / `YYYY-MM-DD` still work.
 - **`mail-use <cmd> --help --json`** returns a JSON descriptor of arguments, options, defaults — use to introspect any command instead of parsing human text.
@@ -219,10 +249,10 @@ mail-use <cmd> --help --json   # structured help: { name, description, options, 
 ## Output contract
 
 - Every response: `success: boolean`. On failure: `error: string` + `error_code: string`.
-- Common `error_code` values: `account_not_found`, `email_not_found`, `folder_not_found`, `invalid_argument`, `invalid_date`, `invalid_limit`, `ambiguous_account`, `size_limit`, `auth_failed`, `network_error`, `imap_error`, `smtp_error`, `operation_failed`, `unknown_error`.
+- Common `error_code` values: `account_not_found`, `email_not_found`, `folder_not_found`, `invalid_argument`, `invalid_date`, `invalid_limit`, `ambiguous_account`, `account_mismatch`, `size_limit`, `auth_failed`, `network_error`, `imap_error`, `smtp_error`, `operation_failed`, `unknown_error`.
 - Exit codes: 0 success, 1 operation failed, 2 invalid usage.
 - Every email object carries `gid` ("`<account_id>:<folder>:<uid>`"). Prefer it over bare `id`/`uid`.
-- Batch `email show` returns `{ success, emails: [...], failed_ids: [{id, error, folder}], requested, returned }`.
+- Batch `email show` returns `{ success, emails: [...], failed_ids: [{id, error, folder}], requested, returned, account_id }`, emails in request order. When the gids span accounts, `account_id` is replaced by `account_ids: [...]` and every email / failed id carries its own `account_id`.
 - **Unread counts** on `list`/`recent` are three distinct fields — read the right one:
   `unread_in_result` (unread among the rows actually returned — always trustworthy),
   `folder_unread` (server count for the queried folder; `unread_count` is a back-compat alias),
@@ -236,6 +266,13 @@ mail-use <cmd> --help --json   # structured help: { name, description, options, 
   than `--limit` AND the snapshot is older than the freshness window (default 120s, set via
   `MAILBOX_CACHE_FRESH_SECONDS`; `0` disables), the CLI auto-falls back to a live IMAP fetch — so a
   just-arrived OTP isn't missed between syncs. Pass `--live` to force IMAP outright.
+- **Partial cache never answers a wider window**: the cache holds only the newest N messages per
+  folder. When a cached `list`/`recent` page reaches past what the cache covers (a thin page whose
+  `--since`/`--date-from` or `--offset` goes further back, or a full page whose oldest row is older
+  than the covered date), the CLI goes live even if the cache is seconds old, so
+  `--since 3mo --limit 500` returns the whole window, not just the cached slice. Cached results carry
+  `cache_complete` (false = partial cache) and `cache_covers_from` (oldest date the cache is complete
+  from); with `MAILBOX_CACHE_FRESH_SECONDS=0` they are your only signal, so check them.
 - **Email body**: `body` (text), `body_source` (`text` | `html_derived` | `empty`), `html_body`
   (empty unless `--full`/`--include-html`). HTML-only mail still yields a usable `body`.
 - **Attachments**: each carries `is_signature` / `is_inline` / `is_real_attachment`;

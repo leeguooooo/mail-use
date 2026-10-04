@@ -87,13 +87,61 @@ function _validateDateOpt(name, raw) {
   return { ok: false, error: `${name} value "${value}" is not a valid date (expected YYYY-MM-DD, ISO 8601, or relative like 2d/3w/1mo/today/yesterday)` };
 }
 
+// Read at most `maxBytes` from stdin, stopping there instead of buffering an
+// arbitrarily large pipe into memory first.
+function _readStdinBounded(maxBytes) {
+  const chunks = [];
+  let total = 0;
+  const chunk = Buffer.alloc(64 * 1024);
+  while (total < maxBytes) {
+    let n;
+    try {
+      n = fs.readSync(0, chunk, 0, Math.min(chunk.length, maxBytes - total), null);
+    } catch (e) {
+      if (e && e.code === "EAGAIN") continue; // non-blocking stdin: retry
+      if (e && e.code === "EOF") break; // Windows pipe closed
+      throw e;
+    }
+    if (n === 0) break;
+    chunks.push(Buffer.from(chunk.subarray(0, n)));
+    total += n;
+  }
+  return Buffer.concat(chunks, total);
+}
+
+// --body-file <path>; "-" reads the body from stdin (heredoc / pipe), the
+// robust way to pass multi-line text without shell quoting.
 function _readBodyFile(bodyFilePath) {
+  if (bodyFilePath === "-") {
+    const buf = _readStdinBounded(MAX_BODY_FILE_BYTES + 1);
+    if (buf.length > MAX_BODY_FILE_BYTES) {
+      throw new Error(`--body-file exceeds ${MAX_BODY_FILE_BYTES} bytes (size>${MAX_BODY_FILE_BYTES})`);
+    }
+    return buf.toString("utf8");
+  }
   const st = fs.statSync(bodyFilePath);
   if (st.size > MAX_BODY_FILE_BYTES) {
     throw new Error(`--body-file exceeds ${MAX_BODY_FILE_BYTES} bytes (size=${st.size})`);
   }
   return fs.readFileSync(bodyFilePath, "utf8");
 }
+
+// Shells do not turn "\n" inside quotes into a newline, so
+// `--body "Hi,\n\nThanks"` reaches us as the two characters backslash + n,
+// and that is what got sent — the recipient saw literal "\n". An inline body
+// with NO real line break but with literal \n sequences is that mistake, so
+// turn \r\n / \n into line breaks. A body that already has real newlines,
+// a --body-file body, or --literal-body is sent byte-for-byte (code samples
+// keep their escapes). An escaped "\\n" (backslash backslash n) is left alone.
+const LITERAL_NEWLINE_SRC = String.raw`(?<!\\)\\(?:r\\n|n)`;
+function _decodeInlineBody(text) {
+  const s = String(text || "");
+  if (/[\r\n]/.test(s) || !new RegExp(LITERAL_NEWLINE_SRC).test(s)) return { body: s, unescaped: false };
+  return { body: s.replace(new RegExp(LITERAL_NEWLINE_SRC, "g"), "\n"), unescaped: true };
+}
+const BODY_UNESCAPED_WARNING =
+  "--body had literal \\n sequences and no real line breaks; converted them to line breaks. " +
+  "Pass --literal-body to send the text as-is, or use --body-file <path|-> for multi-line bodies.";
 
 function _collectOption(value, previous) {
   return [...(previous || []), value];
@@ -148,6 +196,8 @@ module.exports = {
   _isoDate,
   _validateDateOpt,
   _readBodyFile,
+  _decodeInlineBody,
+  BODY_UNESCAPED_WARNING,
   _collectOption,
   _resolveLocalAttachments,
   _attachmentPreview,

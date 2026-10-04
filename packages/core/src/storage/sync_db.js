@@ -501,6 +501,72 @@ function _ageSecondsFrom(iso) {
   return Math.max(0, Math.floor((Date.now() - t) / 1000));
 }
 
+// How much of the scope's mail the cache actually holds. The daemon only keeps
+// the newest SYNC_WINDOW messages per folder, so a folder whose server count
+// (folders.message_count, from the last sync's STATUS) exceeds its cached rows
+// is a *partial* copy: it is complete only from its oldest cached message on.
+//   complete       true  — every scoped folder is fully cached
+//                  false — at least one scoped folder holds more than is cached
+//                  null  — no folder snapshot for the scope (coverage unknown)
+//   coversFrom     when incomplete: the date (date_sent format) from which the
+//                  cache is complete for every scoped folder — the newest of the
+//                  incomplete folders' boundaries. null when complete, unknown,
+//                  or an incomplete folder has no cached rows at all.
+//   unreadComplete every scoped folder caches at least as many unread rows as
+//                  its server unread count — unread-only reads are then covered
+//                  regardless of date.
+// The sync window is by UID, not date: what is missing is every message with a
+// UID below the lowest cached one, and those arrived no later than it. So a
+// folder's boundary is the date of its lowest-UID cached row (never earlier
+// than its oldest cached date), not the oldest cached date alone — a cached
+// message with an old UID but a late date would otherwise vouch for a range
+// that uncached, older-UID mail can still fall into.
+function _cacheCoverage(db, { accountId, folder }) {
+  let sql = `
+    SELECT
+      f.message_count AS message_count,
+      f.unread_count AS unread_count,
+      (SELECT COUNT(*) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0) AS cached,
+      (SELECT COUNT(*) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.is_read = 0) AS cached_unread,
+      (SELECT MIN(e.date_sent) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.date_sent IS NOT NULL AND e.date_sent <> '') AS oldest,
+      (SELECT e.date_sent FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.date_sent IS NOT NULL AND e.date_sent <> '' ORDER BY CAST(e.uid AS INTEGER) ASC LIMIT 1) AS lowest_uid_date
+    FROM folders f
+    WHERE 1 = 1
+  `;
+  const params = [];
+  if (accountId) {
+    sql += " AND f.account_id = ?";
+    params.push(String(accountId));
+  }
+  if (folder && folder !== "all") {
+    sql += " AND f.name = ? COLLATE NOCASE";
+    params.push(String(folder));
+  }
+  const rows = _execRows(db, sql, params);
+  if (!rows.length) return { complete: null, coversFrom: null, unreadComplete: null };
+
+  let complete = true;
+  let unreadComplete = true;
+  let coversFrom = null;
+  let coversNothing = false;
+  for (const r of rows) {
+    const total = r.message_count == null ? null : Number(r.message_count);
+    const cached = Number(r.cached || 0);
+    if (total == null || cached < total) {
+      complete = false;
+      if (r.oldest == null) coversNothing = true;
+      else {
+        const lowUid = r.lowest_uid_date == null ? "" : String(r.lowest_uid_date);
+        const boundary = lowUid > String(r.oldest) ? lowUid : String(r.oldest);
+        if (coversFrom == null || boundary > coversFrom) coversFrom = boundary;
+      }
+    }
+    if (r.unread_count == null || Number(r.cached_unread || 0) < Number(r.unread_count)) unreadComplete = false;
+  }
+  if (complete || coversNothing) coversFrom = null;
+  return { complete, coversFrom, unreadComplete };
+}
+
 async function listEmailsFromCache({ dbPath, accountId, folder, unreadOnly, limit, offset, dateFrom, dateTo, from, includeAccountUnread = false }) {
   if (!dbPath || !fs.existsSync(dbPath)) return null;
 
@@ -638,6 +704,8 @@ async function listEmailsFromCache({ dbPath, accountId, folder, unreadOnly, limi
     // is available (so callers can distinguish "unknown" from "0s old").
     const cache_age_seconds = _ageSecondsFrom(unread_as_of);
 
+    const coverage = _cacheCoverage(h.db, { accountId, folder: resolvedFolder });
+
     // Optional: unread across ALL synced folders for the scope (cheap in cache).
     let account_unread_total = null;
     if (includeAccountUnread) {
@@ -662,6 +730,9 @@ async function listEmailsFromCache({ dbPath, accountId, folder, unreadOnly, limi
       cache_age_seconds,
       cached_emails,
       cached_unread,
+      cache_complete: coverage.complete,
+      cache_covers_from: coverage.coversFrom,
+      cache_unread_complete: coverage.unreadComplete,
       offset: Number(offset),
       limit: Number(limit),
       from_cache: true,
