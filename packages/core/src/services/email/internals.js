@@ -34,21 +34,75 @@ async function _listMailboxes(client) {
   return Array.isArray(r) ? r : [];
 }
 
+function _isSelectableMailbox(mb) {
+  const flagSet = _mailboxFlagSet(mb);
+  return !flagSet.has("\\Noselect") && !flagSet.has("\\NonExistent");
+}
+
 // Pick selectable folder paths to scan when the caller asks for --folder all.
 // Skip \Noselect containers (e.g. "[Gmail]") and Gmail's "All Mail" alias to
 // avoid double-counting messages that already appear in INBOX/Spam/etc.
+// (Gmail search uses _gmailAllMailPlan instead, so archived mail, which lives
+// only in All Mail, is still found.)
 function _selectableFoldersFor(mailboxes) {
   const out = [];
   for (const mb of mailboxes || []) {
     const path = mb.path || mb.name || "";
     if (!path) continue;
-    const flagSet = _mailboxFlagSet(mb);
-    if (flagSet.has("\\Noselect") || flagSet.has("\\NonExistent")) continue;
+    if (!_isSelectableMailbox(mb)) continue;
     const special = String(mb.specialUse || "");
     if (special === "\\All") continue; // Gmail's "All Mail" duplicates everything else.
     out.push(path);
   }
   return out;
+}
+
+// Gmail --folder all plan: All Mail holds every message exactly once except
+// Spam and Trash, so one search there (plus Spam/Trash, which the per-folder
+// scan covered too) finds everything — including archived mail that has no
+// label folder — without visiting every label. null when the account does not
+// expose a selectable \All folder (hidden with Gmail's "Show in IMAP"
+// setting); the caller then falls back to the per-folder scan.
+function _gmailAllMailPlan(mailboxes) {
+  const list = mailboxes || [];
+  const allMb = list.find((mb) => String(mb.specialUse || "") === "\\All" && (mb.path || mb.name) && _isSelectableMailbox(mb));
+  if (!allMb) return null;
+  const allMail = allMb.path || allMb.name;
+  const roleOf = new Map(list.map((mb) => [mb.path || mb.name || "", _mailboxRole(mb)]));
+  const extra = _selectableFoldersFor(list).filter((p) => {
+    const role = roleOf.get(p);
+    return role === "\\Junk" || role === "\\Trash";
+  });
+  return { allMail, folders: [allMail, ...extra] };
+}
+
+// Where a Gmail message found in All Mail "lives", from its X-GM-LABELS:
+// INBOX when labelled \Inbox, else its first user label that is a selectable
+// folder (in LIST order), else Sent / Drafts (so bulk mutations still treat
+// them as special folders), else null: it stays in All Mail (archived, or only
+// Important / Starred). Same order as _folderCanonicalRank.
+function _gmailCanonicalFolder(labels, mailboxes) {
+  const ls = [...(labels || [])].map((l) => String(l));
+  if (!ls.length) return null;
+  const lower = new Set(ls.map((l) => l.toLowerCase()));
+  const selectable = (mailboxes || []).filter((mb) => (mb.path || mb.name) && _isSelectableMailbox(mb));
+  const pathOf = (mb) => mb.path || mb.name;
+  if (lower.has("\\inbox") || lower.has("inbox")) {
+    const inbox = selectable.find((mb) => pathOf(mb).toUpperCase() === "INBOX" || mb.specialUse === "\\Inbox");
+    return inbox ? pathOf(inbox) : "INBOX";
+  }
+  const labelSet = new Set(ls);
+  for (const mb of selectable) {
+    const p = pathOf(mb);
+    if (_mailboxRole(mb) || p.toUpperCase() === "INBOX") continue;
+    if (labelSet.has(p)) return p;
+  }
+  for (const [label, role] of [["\\sent", "\\Sent"], ["\\draft", "\\Drafts"]]) {
+    if (!lower.has(label)) continue;
+    const mb = selectable.find((m) => m.specialUse === role);
+    if (mb) return pathOf(mb);
+  }
+  return null;
 }
 
 // imapflow reports LIST flags as a Set; older shapes / fixtures use an array.
@@ -189,6 +243,8 @@ module.exports = {
   _gid,
   _listMailboxes,
   _selectableFoldersFor,
+  _gmailAllMailPlan,
+  _gmailCanonicalFolder,
   _mailboxRole,
   _folderCanonicalRank,
   _messageIdentityKey,

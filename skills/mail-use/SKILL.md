@@ -157,9 +157,12 @@ mail-use email folders --account-id <id> --json
 
 The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` opens the
 right mailbox with no `--folder` — even for results from `search --folder all`. `--folder all`
-returns each message **once**: Gmail labels (INBOX + Important + Starred + user labels) are
-collapsed to the most canonical folder (INBOX first), and `duplicates_removed` says how many
-alias rows were dropped. Rows with no email id / Message-ID are never merged;
+returns each message **once**. On Gmail it searches `[Gmail]/All Mail` (+ Spam/Trash), so
+**archived mail is found too**, and reports each hit at its real folder: INBOX, else a user
+label, else Sent/Drafts, else `[Gmail]/All Mail` (archived — `special_use: "\All"`; the gid
+works with `show` and mutations like any other). On other servers copies are collapsed to the
+most canonical folder (INBOX first) and `duplicates_removed` says how many alias rows were
+dropped. Rows with no email id / Message-ID are never merged;
 `total_found_is_upper_bound: true` means `total_found` may over-count (aliases past a folder's fetch cap). The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
 Gids from **different accounts** can go in one `show` call (e.g. straight from `email recent`):
