@@ -210,21 +210,29 @@ async function listEmails({
         // covers it, so don't force every call live on a null age.
         const abandoned =
           freshSeconds > 0 && abandonedSeconds > 0 && ageSec != null && ageSec > abandonedSeconds;
-        // Coverage gap: the cache is only the newest N messages per folder, so a
-        // thin page can mean "the window reaches past what we cached", not "the
-        // folder has no more". That is unknowable from the cache however fresh
-        // it is, so freshness doesn't excuse it. A full page is still correct
-        // (rows are newest-first and the cache holds everything newer than its
-        // oldest row); a thin page is trusted only when the requested window
-        // starts inside the covered range, or (unread-only) every unread
-        // message is cached. MAILBOX_CACHE_FRESH_SECONDS=0 ("trust the cache,
-        // never auto-fallback") disables this too.
+        // Coverage gap: the cache is only the newest N messages per folder (by
+        // UID), while pages are sorted by date, so neither a thin nor a full
+        // page proves completeness by itself. A page is trusted only when what
+        // it answers lies inside the range the cache is known to cover
+        // (cache_covers_from, derived conservatively in sync_db):
+        //  - the requested window starts there or later (--since/--date-from), or
+        //  - the page is full and its oldest row is there or later (the common
+        //    "newest N" read: nothing missing can sort above that row).
+        // Also trusted: a complete cache, unknown coverage (null), and
+        // unread-only reads when every unread message is cached.
+        // MAILBOX_CACHE_FRESH_SECONDS=0 ("trust the cache, never
+        // auto-fallback") disables this too.
+        const coversFrom = cache.cache_covers_from;
+        const lastDate = returned > 0 ? String(cache.emails[returned - 1].date || "") : "";
+        const windowCovered =
+          lim === 0 ||
+          (coversFrom != null &&
+            ((sqlFrom && sqlFrom >= coversFrom) || (!thin && lastDate !== "" && lastDate >= coversFrom)));
         const coverageGap =
           freshSeconds > 0 &&
-          thin &&
           cache.cache_complete === false &&
           !(unreadOnly && cache.cache_unread_complete === true) &&
-          (!sqlFrom || cache.cache_covers_from == null || sqlFrom < cache.cache_covers_from);
+          !windowCovered;
 
         // Self-heal in three cases:
         //  - thin AND stale: the silent-miss case (asking for the latest mail
@@ -233,8 +241,8 @@ async function listEmails({
         //  - abandoned: the snapshot is so old that nothing is syncing. Row
         //    count says nothing here; a full page of months-old mail is exactly
         //    the answer we must not give.
-        //  - coverage gap: thin, and the requested window reaches earlier than
-        //    the partial cache is known to be complete. Fires however fresh the
+        //  - coverage gap: the page (thin or full) reaches earlier than the
+        //    partial cache is known to be complete. Fires however fresh the
         //    snapshot is (a fresh cache is just as partial); only the
         //    MAILBOX_CACHE_FRESH_SECONDS=0 "never auto-fallback" hatch disables it.
         if ((thin && stale) || abandoned || coverageGap) {
@@ -242,7 +250,7 @@ async function listEmails({
             const why = abandoned
               ? `abandoned (age ${_humanAge(ageSec)} > ${abandonedSeconds}s)`
               : coverageGap
-                ? `thin (${returned}/${lim}) and only covers from ${cache.cache_covers_from || "nothing"}${sqlFrom ? ` (asked from ${sqlFrom})` : ""}`
+                ? `${returned}/${lim} rows but the cache only covers from ${cache.cache_covers_from || "nothing"}${sqlFrom ? ` (asked from ${sqlFrom})` : ""}`
                 : `thin (${returned}/${lim}) and stale (age ${_humanAge(ageSec)} > ${freshSeconds}s)`;
             process.stderr.write(`mail-use: cache ${why} — refetching live\n`);
           }

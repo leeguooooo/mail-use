@@ -169,4 +169,33 @@ describe("cache coverage: partial cache vs requested date window", () => {
     expect(r.cache_complete).toBe(false); // caller can still tell it is partial
     expect(r.cache_covers_from).toBe("2026-08-14 10:00:00");
   });
+
+  // The window is by UID; pages are by date. A cached row with the lowest UID
+  // but a late date means uncached (lower-UID) mail may date up to there too.
+  function lateLowUidRows() {
+    const rows = cachedRows();
+    rows.push({ uid: "4999", subject: "CACHED late", from: "a@b.com", date: "2026-08-20 12:00:00", unread: false });
+    return rows;
+  }
+
+  it("cache_covers_from is the lowest-UID row's date when that is later than the oldest date", async () => {
+    const dbPath = await seedCache({ rows: lateLowUidRows(), messageCount: 870 });
+    const r = await syncDb.listEmailsFromCache({ dbPath, accountId: "mock_acc", folder: "INBOX", limit: 5, offset: 0 });
+    expect(r.cache_covers_from).toBe("2026-08-20 12:00:00");
+  });
+
+  it("partial cache + full page reaching below the coverage boundary -> live", async () => {
+    await seedCache({ rows: lateLowUidRows(), messageCount: 870 });
+    // Full page of 5: 08-21, 08-20 12:00, 08-20, 08-19, 08-18 — its oldest row
+    // predates the boundary, where uncached mail may sort in.
+    const r = await email.listEmails({ account_id: "mock_acc", folder: "INBOX", limit: 5, use_cache: true });
+    expect(r.from_cache).toBe(false);
+  });
+
+  it("partial cache + full page inside the coverage boundary stays on the cache", async () => {
+    await seedCache({ rows: lateLowUidRows(), messageCount: 870 });
+    const r = await email.listEmails({ account_id: "mock_acc", folder: "INBOX", limit: 2, use_cache: true });
+    expect(r.from_cache).toBe(true);
+    expect(r.emails.length).toBe(2);
+  });
 });

@@ -510,13 +510,17 @@ function _ageSecondsFrom(iso) {
 //                  null  — no folder snapshot for the scope (coverage unknown)
 //   coversFrom     when incomplete: the date (date_sent format) from which the
 //                  cache is complete for every scoped folder — the newest of the
-//                  incomplete folders' oldest cached dates. null when complete,
-//                  unknown, or an incomplete folder has no cached rows at all.
+//                  incomplete folders' boundaries. null when complete, unknown,
+//                  or an incomplete folder has no cached rows at all.
 //   unreadComplete every scoped folder caches at least as many unread rows as
 //                  its server unread count — unread-only reads are then covered
 //                  regardless of date.
-// The sync window is by UID, not date, so coversFrom is a close approximation
-// (a message filed late with an old Date: header can pull it earlier).
+// The sync window is by UID, not date: what is missing is every message with a
+// UID below the lowest cached one, and those arrived no later than it. So a
+// folder's boundary is the date of its lowest-UID cached row (never earlier
+// than its oldest cached date), not the oldest cached date alone — a cached
+// message with an old UID but a late date would otherwise vouch for a range
+// that uncached, older-UID mail can still fall into.
 function _cacheCoverage(db, { accountId, folder }) {
   let sql = `
     SELECT
@@ -524,7 +528,8 @@ function _cacheCoverage(db, { accountId, folder }) {
       f.unread_count AS unread_count,
       (SELECT COUNT(*) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0) AS cached,
       (SELECT COUNT(*) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.is_read = 0) AS cached_unread,
-      (SELECT MIN(e.date_sent) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.date_sent IS NOT NULL AND e.date_sent <> '') AS oldest
+      (SELECT MIN(e.date_sent) FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.date_sent IS NOT NULL AND e.date_sent <> '') AS oldest,
+      (SELECT e.date_sent FROM emails e WHERE e.account_id = f.account_id AND e.folder_id = f.id AND e.is_deleted = 0 AND e.date_sent IS NOT NULL AND e.date_sent <> '' ORDER BY CAST(e.uid AS INTEGER) ASC LIMIT 1) AS lowest_uid_date
     FROM folders f
     WHERE 1 = 1
   `;
@@ -550,7 +555,11 @@ function _cacheCoverage(db, { accountId, folder }) {
     if (total == null || cached < total) {
       complete = false;
       if (r.oldest == null) coversNothing = true;
-      else if (coversFrom == null || String(r.oldest) > coversFrom) coversFrom = String(r.oldest);
+      else {
+        const lowUid = r.lowest_uid_date == null ? "" : String(r.lowest_uid_date);
+        const boundary = lowUid > String(r.oldest) ? lowUid : String(r.oldest);
+        if (coversFrom == null || boundary > coversFrom) coversFrom = boundary;
+      }
     }
     if (r.unread_count == null || Number(r.cached_unread || 0) < Number(r.unread_count)) unreadComplete = false;
   }
