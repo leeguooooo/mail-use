@@ -12,7 +12,7 @@ const { z } = require("zod");
 const { contract } = require("@mail-use/shared");
 const { makeProxies } = require("./core_client");
 const { getCliVersion } = require("./cli_version");
-const { resolveEmailRefs, resolveFolderGroups, mutateByFolder } = require("./cli/targets");
+const { resolveEmailRefsChecked, resolveFolderGroups, mutateByFolder, groupRefsByAccount, mutateByAccount, showRefs } = require("./cli/targets");
 
 const { accounts, email, sync, digest, inbox, cleanup } = makeProxies();
 
@@ -122,7 +122,7 @@ function buildServer() {
 
   server.registerTool("email_show", {
     title: "Read one or more emails",
-    description: "Fetch the body of one or more emails over a single IMAP connection. Each id can be a bare UID + account_id, or a global gid 'account_id:folder:uid' (legacy 'account_id:uid' still works). With a 3-part gid (as returned by email_list/email_search) the folder is auto-resolved, so you don't need to pass folder. AI-friendly defaults: HTML excluded, body capped at 2000 chars, URLs stripped, and HTML-only mail is auto-converted to a text body (body_source='html_derived'). Pass full=true to opt back to raw HTML + uncapped body + URLs.",
+    description: "Fetch the body of one or more emails over a single IMAP connection. Each id can be a bare UID + account_id, or a global gid 'account_id:folder:uid' (legacy 'account_id:uid' still works). With a 3-part gid (as returned by email_list/email_search) the folder is auto-resolved, so you don't need to pass folder. Gids from different accounts may be mixed in one call: they are fetched per account and merged in the requested order (the response then has account_ids[] instead of account_id, and each email carries account_id); don't pass account_id with gids — a conflicting one fails with account_mismatch. AI-friendly defaults: HTML excluded, body capped at 2000 chars, URLs stripped, and HTML-only mail is auto-converted to a text body (body_source='html_derived'). Pass full=true to opt back to raw HTML + uncapped body + URLs.",
     inputSchema: {
       ids: z.array(z.string()).min(1).describe("UIDs or gids."),
       account_id: accountIdOpt,
@@ -135,7 +135,7 @@ function buildServer() {
     },
   }, async (args) => {
     // Resolve gids: 3-part account_id:folder:uid (preferred) or legacy account_id:uid.
-    const r = _resolveRefs(args.ids, args.account_id);
+    const r = await _resolveRefs(args.ids, args.account_id);
     if (r.error) return _refsError(r);
     const { refs, ids, accountId: resolvedAccount } = r;
     const explicitFolder = args.folder || "";
@@ -150,8 +150,9 @@ function buildServer() {
       const folder = await email.resolveEmailFolder({ account_id: resolvedAccount, uid: ids[0], folder: explicitFolder || refs[0].folder });
       return _toolResult(await email.showEmail({ email_id: ids[0], folder, ...baseOpts }), false);
     }
-    if (explicitFolder) return _toolResult(await email.showEmails({ email_ids: ids, folder: explicitFolder, ...baseOpts }), false);
-    return _toolResult(await email.showEmailsResolved({ refs, ...baseOpts }), false);
+    // Batch: gids from several accounts are fetched per account and merged in
+    // the requested order (account_ids[] instead of a top-level account_id).
+    return _toolResult(await showRefs(email, { refs, accountId: resolvedAccount, explicitFolder, baseOpts }), false);
   });
 
   server.registerTool("email_folders", {
@@ -173,12 +174,9 @@ function buildServer() {
       confirm: z.boolean().optional().describe("Apply changes (default false = dry-run preview)."),
     },
   }, async (args) => {
-    const r = _resolveRefs(args.ids, args.account_id);
+    const r = await _resolveRefs(args.ids, args.account_id);
     if (r.error) return _refsError(r);
-    const { accountId, refs } = r;
-    if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
-    const groups = await resolveFolderGroups(email, refs, accountId, args.folder);
-    return _toolResult(await mutateByFolder(groups, (ids, folder) => email.markEmails({
+    return _toolResult(await _mutateRefs(r, args.folder, (ids, folder, accountId) => email.markEmails({
       email_ids: ids,
       mark_as: args.mark_as,
       folder,
@@ -199,12 +197,9 @@ function buildServer() {
       confirm: z.boolean().optional(),
     },
   }, async (args) => {
-    const r = _resolveRefs(args.ids, args.account_id);
+    const r = await _resolveRefs(args.ids, args.account_id);
     if (r.error) return _refsError(r);
-    const { accountId, refs } = r;
-    if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
-    const groups = await resolveFolderGroups(email, refs, accountId, args.folder);
-    return _toolResult(await mutateByFolder(groups, (ids, folder) => email.deleteEmails({
+    return _toolResult(await _mutateRefs(r, args.folder, (ids, folder, accountId) => email.deleteEmails({
       email_ids: ids,
       folder,
       permanent: Boolean(args.permanent),
@@ -226,7 +221,7 @@ function buildServer() {
       confirm: z.boolean().optional(),
     },
   }, async (args) => {
-    const r = _resolveRefs([args.id], args.account_id);
+    const r = await _resolveRefs([args.id], args.account_id);
     if (r.error) return _refsError(r);
     const { accountId, refs } = r;
     if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
@@ -252,13 +247,10 @@ function buildServer() {
       confirm: z.boolean().optional(),
     },
   }, async (args) => {
-    const r = _resolveRefs(args.ids, args.account_id);
+    const r = await _resolveRefs(args.ids, args.account_id);
     if (r.error) return _refsError(r);
-    const { accountId, refs } = r;
-    if (!accountId) return _toolResult({ success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" });
     // The gid's folder is the SOURCE; an explicit source_folder overrides it.
-    const groups = await resolveFolderGroups(email, refs, accountId, args.source_folder);
-    return _toolResult(await mutateByFolder(groups, (ids, source) => email.moveEmails({
+    return _toolResult(await _mutateRefs(r, args.source_folder, (ids, source, accountId) => email.moveEmails({
       email_ids: ids,
       target_folder: args.target_folder,
       source_folder: source,
@@ -390,10 +382,24 @@ function buildServer() {
   return server;
 }
 
-// Gid parsing / account resolution is shared with the CLI (cli/targets.js), so
-// mixed-account gids fail the same way here: error_code "ambiguous_account".
+// Gid parsing / account resolution is shared with the CLI (cli/targets.js):
+// gids from several accounts are grouped per account, a bare uid next to them
+// fails with "ambiguous_account", and an account_id that conflicts with a
+// gid's account fails with "account_mismatch" — same as the CLI.
 function _resolveRefs(ids, explicitAccountId) {
-  return resolveEmailRefs(ids, explicitAccountId, { split: false, accountParam: "account_id" });
+  return resolveEmailRefsChecked(accounts, ids, explicitAccountId, { split: false, accountParam: "account_id" });
+}
+
+// Mutate resolved refs per account, then per folder (gid folder -> cache ->
+// INBOX; an explicit folder wins). call(ids, folder, accountId).
+async function _mutateRefs(r, explicitFolder, call) {
+  if (!r.accountId && !r.mixed) {
+    return { success: false, error: "Missing account_id (or pass gid)", error_code: "invalid_argument" };
+  }
+  return mutateByAccount(groupRefsByAccount(r.refs, r.accountId), async (accountId, accRefs) => mutateByFolder(
+    await resolveFolderGroups(email, accRefs, accountId, explicitFolder),
+    (ids, folder) => call(ids, folder, accountId),
+  ));
 }
 
 function _refsError(r) {

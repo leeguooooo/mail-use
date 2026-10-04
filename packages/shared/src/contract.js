@@ -214,6 +214,7 @@ const ERROR_CODE_RULES = [
   [/is not a valid date/i, "invalid_date"],
   [/must be a non-negative number|exceeds MAILBOX_MAX_LIMIT/i, "invalid_limit"],
   [/^Mixed account_ids/i, "ambiguous_account"],
+  [/^Account mismatch/i, "account_mismatch"],
   [/exceeds MAILBOX_MAX_BODY_FILE_BYTES|exceeds MAILBOX_MAX_MESSAGE_BYTES/i, "size_limit"],
   [/AUTHENTICATIONFAILED|Invalid credentials|535[\s-]/i, "auth_failed"],
   // Now the generic argument-validation catch-all.

@@ -94,7 +94,7 @@ async function _mutate(ctx, { operation, label, ids, opts, markAs }) {
     return ctx.respond(result, label);
   }
 
-  const refs = targets.resolveEmailRefs(targets.emailIdArgs(ids), opts.accountId);
+  const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, targets.emailIdArgs(ids), opts.accountId);
   if (refs.error) {
     return ctx.usage(refs.error);
   }
@@ -278,7 +278,7 @@ function register(program, ctx) {
         bodyMax = 400;
         if (!htmlMax && includeHtml) htmlMax = 2000;
       }
-      const refs = targets.resolveEmailRefs(emailIds, opts.accountId);
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, emailIds, opts.accountId);
       if (refs.error) ctx.usage(refs.error);
       const ids = refs.ids;
       const explicitFolder = opts.folder; // undefined unless the user passed --folder
@@ -298,10 +298,15 @@ function register(program, ctx) {
         ctx.respond(result, "email show");
       }
       // Batch: an explicit --folder applies to all; otherwise resolve each id's
-      // folder from its gid/cache so results that span folders just work.
-      const result = explicitFolder
-        ? await email.showEmails({ email_ids: ids, folder: explicitFolder, ...baseOpts })
-        : await email.showEmailsResolved({ refs: refs.refs, ...baseOpts });
+      // folder from its gid/cache so results that span folders just work. Gids
+      // from several accounts are fetched per account and merged in the
+      // requested order (top-level account_ids[] instead of account_id).
+      const result = await targets.showRefs(email, {
+        refs: refs.refs,
+        accountId: refs.accountId,
+        explicitFolder: explicitFolder || "",
+        baseOpts,
+      });
       if (opts.extractCode) _attachExtractedCodes(result);
       ctx.respond(result, "email show");
     });
@@ -487,7 +492,7 @@ function register(program, ctx) {
     .option("--account-id <id>", "Required if email_id is a bare UID")
     .option("--folder <name>", "Folder", "INBOX")
     .action(async (emailId, opts, cmd) => {
-      const refs = targets.resolveEmailRefs([emailId], opts.accountId);
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, [emailId], opts.accountId);
       if (refs.error || !refs.accountId) {
         ctx.usage(refs.error || "Missing --account-id (or pass a gid like account_id:uid)");
       }
@@ -514,7 +519,7 @@ function register(program, ctx) {
       if ((set && unset) || (!set && !unset)) {
         ctx.usage("Specify exactly one of --set/--unset");
       }
-      const refs = targets.resolveEmailRefs([emailId], opts.accountId);
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, [emailId], opts.accountId);
       if (refs.error || !refs.accountId) {
         ctx.usage(refs.error || "Missing --account-id (or pass a gid like account_id:uid)");
       }
@@ -542,24 +547,28 @@ function register(program, ctx) {
     .option("--confirm", "Apply changes (default: dry-run)")
     .option("--dry-run")
     .action(async (ids, opts, cmd) => {
-      const refs = targets.resolveEmailRefs(ids, opts.accountId);
-      if (refs.error || !refs.accountId) {
+      const refs = await targets.resolveEmailRefsChecked(ctx.proxies.accounts, ids, opts.accountId);
+      if (refs.error || (!refs.accountId && !refs.mixed)) {
         ctx.usage(refs.error || "Missing --account-id (or pass gids like account_id:uid)");
       }
       const dryRun = Boolean(opts.dryRun) || !opts.confirm;
-      // Gids from `search --folder all` can span folders: move each folder's
-      // UIDs out of that folder. An explicit --source-folder overrides them.
+      // Gids from `search --folder all` can span folders (and accounts): move
+      // each folder's UIDs out of that folder, per account. An explicit
+      // --source-folder overrides the gid folders.
       const explicitSource = _explicitOptionValue(cmd, opts, "sourceFolder");
-      const groups = explicitSource
-        ? new Map([[explicitSource, refs.ids]])
-        : targets.groupRefsByFolder(refs.refs, opts.sourceFolder);
-      const result = await targets.mutateByFolder(groups, (emailIds, folder) => email.moveEmails({
-        email_ids: emailIds,
-        target_folder: opts.targetFolder,
-        source_folder: folder,
-        account_id: refs.accountId,
-        dry_run: dryRun,
-      }));
+      const byAccount = targets.groupRefsByAccount(refs.refs, refs.accountId);
+      const result = await targets.mutateByAccount(byAccount, (acc, accRefs) => targets.mutateByFolder(
+        explicitSource
+          ? new Map([[explicitSource, accRefs.map((r) => r.id)]])
+          : targets.groupRefsByFolder(accRefs, opts.sourceFolder),
+        (emailIds, folder) => email.moveEmails({
+          email_ids: emailIds,
+          target_folder: opts.targetFolder,
+          source_folder: folder,
+          account_id: acc,
+          dry_run: dryRun,
+        }),
+      ));
       _markConfirmationRequired(result, opts, dryRun);
       ctx.respond(result, "email move");
     });

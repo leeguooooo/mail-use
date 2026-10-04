@@ -66,8 +66,32 @@ function _ensureState() {
         },
       },
     };
+    _seedExtraAccounts(globalThis.__MAILBOX_MOCK_STATE);
   }
   return globalThis.__MAILBOX_MOCK_STATE;
+}
+
+// MAILBOX_MOCK_EXTRA_ACCOUNTS="acc_b,acc_c" seeds more mock accounts, each with
+// its own copy of mock_acc's fixture mailboxes (same uids/subjects). Lets CLI
+// subprocess tests exercise multi-account paths; the accounts still have to
+// be configured in auth.json.
+function _seedExtraAccounts(st) {
+  const ids = String(process.env.MAILBOX_MOCK_EXTRA_ACCOUNTS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return;
+  const base = st.accounts.mock_acc;
+  const cloneMsg = (m) => ({
+    ...m,
+    flags: new Set(m.flags || []),
+    attachments: (m.attachments || []).map((a) => ({ ...a })),
+  });
+  for (const id of ids) {
+    if (st.accounts[id]) continue;
+    const mailboxes = {};
+    for (const [name, mb] of Object.entries(base.mailboxes)) {
+      mailboxes[name] = { ...mb, messages: mb.messages.map(cloneMsg) };
+    }
+    st.accounts[id] = { ...base, id, email: `${id}@example.com`, mailboxes };
+  }
 }
 
 // Every IMAP command the mock client receives, in order. Tests use it to
