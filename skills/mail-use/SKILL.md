@@ -236,6 +236,12 @@ mail-use <cmd> --help --json   # structured help: { name, description, options, 
   than `--limit` AND the snapshot is older than the freshness window (default 120s, set via
   `MAILBOX_CACHE_FRESH_SECONDS`; `0` disables), the CLI auto-falls back to a live IMAP fetch — so a
   just-arrived OTP isn't missed between syncs. Pass `--live` to force IMAP outright.
+- **Partial cache never answers a wider window**: the cache holds only the newest N messages per
+  folder. When a cached `list`/`recent` is thin and `--since`/`--date-from` (or `--offset` paging)
+  reaches past what the cache covers, the CLI goes live even if the cache is seconds old — so
+  `--since 3mo --limit 500` returns the whole window, not just the cached slice. Cached results carry
+  `cache_complete` (false = partial cache) and `cache_covers_from` (oldest date the cache is complete
+  from); with `MAILBOX_CACHE_FRESH_SECONDS=0` they are your only signal, so check them.
 - **Email body**: `body` (text), `body_source` (`text` | `html_derived` | `empty`), `html_body`
   (empty unless `--full`/`--include-html`). HTML-only mail still yields a usable `body`.
 - **Attachments**: each carries `is_signature` / `is_inline` / `is_real_attachment`;

@@ -62,7 +62,7 @@ function buildServer() {
 
   server.registerTool("email_list", {
     title: "List recent emails",
-    description: "List emails from one or all accounts. Reads the local SQLite cache when warm (~165ms); pass live=true to hit IMAP. Pass with_preview to also fetch a body snippet of N chars per email in the same round-trip — saves an email_show call per result. Unread is reported as three distinct fields: unread_in_result (unread among returned rows — always trustworthy), folder_unread (server count for this folder), and account_unread_total (null unless include_account_unread=true). unread_as_of marks snapshot freshness.",
+    description: "List emails from one or all accounts. Reads the local SQLite cache when warm (~165ms); pass live=true to hit IMAP. Pass with_preview to also fetch a body snippet of N chars per email in the same round-trip — saves an email_show call per result. Unread is reported as three distinct fields: unread_in_result (unread among returned rows — always trustworthy), folder_unread (server count for this folder), and account_unread_total (null unless include_account_unread=true). unread_as_of marks snapshot freshness. The cache holds only the newest messages per folder: a thin cached page whose date_from/offset reaches past it falls back to live IMAP automatically, and cached results carry cache_complete / cache_covers_from.",
     inputSchema: {
       account_id: accountIdOpt,
       folder: folderOpt,

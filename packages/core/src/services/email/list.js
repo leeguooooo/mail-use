@@ -210,19 +210,40 @@ async function listEmails({
         // covers it, so don't force every call live on a null age.
         const abandoned =
           freshSeconds > 0 && abandonedSeconds > 0 && ageSec != null && ageSec > abandonedSeconds;
+        // Coverage gap: the cache is only the newest N messages per folder, so a
+        // thin page can mean "the window reaches past what we cached", not "the
+        // folder has no more". That is unknowable from the cache however fresh
+        // it is, so freshness doesn't excuse it. A full page is still correct
+        // (rows are newest-first and the cache holds everything newer than its
+        // oldest row); a thin page is trusted only when the requested window
+        // starts inside the covered range, or (unread-only) every unread
+        // message is cached. MAILBOX_CACHE_FRESH_SECONDS=0 ("trust the cache,
+        // never auto-fallback") disables this too.
+        const coverageGap =
+          freshSeconds > 0 &&
+          thin &&
+          cache.cache_complete === false &&
+          !(unreadOnly && cache.cache_unread_complete === true) &&
+          (!sqlFrom || cache.cache_covers_from == null || sqlFrom < cache.cache_covers_from);
 
-        // Self-heal in two cases:
+        // Self-heal in three cases:
         //  - thin AND stale: the silent-miss case (asking for the latest mail
         //    seconds after it arrived, before the next sync). A thin-but-fresh
         //    read is trusted — the folder genuinely has that few.
         //  - abandoned: the snapshot is so old that nothing is syncing. Row
         //    count says nothing here; a full page of months-old mail is exactly
         //    the answer we must not give.
-        if ((thin && stale) || abandoned) {
+        //  - coverage gap: thin, and the requested window reaches earlier than
+        //    the partial cache is known to be complete. Fires however fresh the
+        //    snapshot is (a fresh cache is just as partial); only the
+        //    MAILBOX_CACHE_FRESH_SECONDS=0 "never auto-fallback" hatch disables it.
+        if ((thin && stale) || abandoned || coverageGap) {
           if (process.env.MAILBOX_DEBUG) {
             const why = abandoned
               ? `abandoned (age ${_humanAge(ageSec)} > ${abandonedSeconds}s)`
-              : `thin (${returned}/${lim}) and stale (age ${_humanAge(ageSec)} > ${freshSeconds}s)`;
+              : coverageGap
+                ? `thin (${returned}/${lim}) and only covers from ${cache.cache_covers_from || "nothing"}${sqlFrom ? ` (asked from ${sqlFrom})` : ""}`
+                : `thin (${returned}/${lim}) and stale (age ${_humanAge(ageSec)} > ${freshSeconds}s)`;
             process.stderr.write(`mail-use: cache ${why} — refetching live\n`);
           }
           // fall through to the live IMAP path below
@@ -240,8 +261,9 @@ async function listEmails({
             thin || stale
               ? `served from cache (age ${_humanAge(ageSec)}${thin ? `, ${returned}/${lim} rows` : ""}); pass --live (or use_cache=false) to force a live IMAP fetch`
               : undefined;
+          const { cache_unread_complete: _unreadComplete, ...cacheOut } = cache;
           return {
-            ...cache,
+            ...cacheOut,
             total_emails: cache.total_in_folder,
             total_unread: cache.unread_count,
             accounts_count,

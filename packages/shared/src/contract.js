@@ -118,6 +118,10 @@ const COMPACT_TOP_LEVEL_KEEP = new Set([
   "unread_as_of",
   "cache_age_seconds",
   "cache_stale",
+  // Coverage of a partial cache (newest N per folder): lets a compact caller
+  // tell a cached page that may be missing older mail.
+  "cache_complete",
+  "cache_covers_from",
   "hint",
 ]);
 

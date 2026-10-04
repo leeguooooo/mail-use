@@ -91,6 +91,8 @@ Common shape (superset):
   "from_cache": true,
   "unread_as_of": "2026-06-11T00:00:00.000Z",
   "cache_age_seconds": 42,
+  "cache_complete": false,
+  "cache_covers_from": "2026-08-14 09:12:00",
   "hint": "served from cache (age 42s); pass --live (or use_cache=false) to force a live IMAP fetch"
 }
 ```
@@ -111,6 +113,19 @@ Notes:
   - Self-heal: a thin **and** stale (older than `MAILBOX_CACHE_FRESH_SECONDS`,
     default 120s; `0` disables) cached read auto-falls back to live IMAP, so a
     just-arrived email is picked up without an explicit `--live`.
+  - Coverage (cached reads only): the daemon caches only the newest N messages
+    per folder. `cache_complete` is `true` when every scoped folder is fully
+    cached, `false` when the server folder holds more than the cache, `null`
+    when there is no folder snapshot. `cache_covers_from` (`YYYY-MM-DD HH:MM:SS`,
+    or `null` when complete/unknown/empty) is the date from which the partial
+    cache is known to be complete.
+  - Coverage self-heal: a thin cached read whose window reaches earlier than
+    `cache_covers_from` (or has no `--since`/`--date-from`, e.g. paging past
+    the cached rows with `--offset`) on a partial cache auto-falls back to live
+    IMAP **however fresh the cache is**. Unread-only reads stay on the cache
+    when every unread message is cached. A full page stays on the cache (rows
+    are newest-first, so it lies inside the covered range).
+    `MAILBOX_CACHE_FRESH_SECONDS=0` disables this fallback too.
 
 ### email search
 Two main variants (optimized vs fallback). Keep a union of fields:
