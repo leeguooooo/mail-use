@@ -188,6 +188,20 @@ Notes:
   folder held more matches than were fetched, so aliases beyond the cap could
   not be subtracted and `total_found` may over-count.
   A single-folder search is never deduped.
+- Gmail `--folder all` searches `[Gmail]/All Mail` (localized, found by its
+  `\All` special-use, e.g. `[Gmail]/所有邮件`) plus Spam and Trash instead of
+  every label folder, so **archived mail (no longer in INBOX, no user label) is
+  found**. Each hit is reported at the folder it lives in, from its Gmail labels
+  (`X-GM-LABELS`): INBOX if labelled Inbox, else its first user label, else
+  Sent / Drafts, else it stays in All Mail (`folder: "[Gmail]/All Mail"`,
+  `special_use: "\All"`) — archived mail, or mail that is only Important /
+  Starred. All Mail gids work with `show` and every mutation (on Gmail, a
+  `delete` from All Mail moves the message to Trash, as from any label). All
+  Mail, Spam and Trash are disjoint, so this path never reports
+  `duplicates_removed` or `total_found_is_upper_bound` and `total_found` is
+  exact. If All Mail is hidden from IMAP (Gmail's "Show in IMAP" setting) the
+  per-folder scan above is used and archived mail without a label is not
+  reachable.
 - `special_use` (only on `--folder all` rows whose folder has one) is the
   folder's RFC 6154 role (`\Inbox`, `\Sent`, `\Trash`, `\Important`, ...), so
   callers can recognise localized names like `[Gmail]/已发邮件`.
@@ -195,6 +209,9 @@ Notes:
   IMAP servers (a real copy in two folders is two messages, and each is acted
   on), but Gmail label aliases are still collapsed so one message is never
   marked or trashed twice. Its special-folder skip uses `special_use` too.
+  On Gmail that one copy is the canonical row described above, so archived
+  matches are acted on through `[Gmail]/All Mail` (once), while Sent / Drafts /
+  Spam / Trash matches are still skipped without `--include-special`.
 
 ### email show
 ```json
