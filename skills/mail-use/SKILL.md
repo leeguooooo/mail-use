@@ -349,7 +349,9 @@ Measured (Gmail INBOX, M2 MacBook over residential WAN):
 
 When any `mail-use` command prints `mail-use X is available`, tell the user and offer to run
 `mail-use upgrade` (CLI only; add `--skills` to also refresh this skill, `--tag vX.Y.Z` to pin
-a release). Check without changing anything: `mail-use upgrade --check` (or `--json`). The user
+a release). `--json` is only the output format: `mail-use upgrade --json` upgrades too (check `upgraded`).
+Check without changing anything: `mail-use upgrade --check` (add `--json` for JSON with
+`checked_only: true, upgraded: false`). The user
 may also just say "升级 mail-use" / "upgrade mail-use". Exit 1 with a `brew`/`npm`/`git` command
 means another manager owns this install: relay that command instead of retrying.
 

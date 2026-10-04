@@ -2,7 +2,10 @@
 //   upgrade           install the latest release (release-binary installs only)
 //   upgrade --skills  also refresh mail-use's own skill copies (opt-in)
 //   upgrade --check   change nothing; `mail-use X -> Y` / `mail-use X is up to date`
-//   upgrade --json    same as --check, as JSON (name/current/latest/update_available/skills/install_channel)
+//                     (with --json: name/current/latest/update_available/skills/
+//                     install_channel, plus upgraded:false, checked_only:true)
+// --json is only an output format, like everywhere else in this CLI: `upgrade
+// --json` upgrades and reports as JSON. `--check` is the only check-only form.
 //   upgrade --tag v…  install (or --check) this exact release
 // Exit 0 on success (including "update available"), 2 when the check, the
 // download or the verification failed, 1 when refused because another
@@ -15,7 +18,7 @@ const { _out } = require("../cli/render");
 function register(program, ctx) {
   program
     .command("upgrade")
-    .description("Upgrade the CLI from GitHub Releases (sha256-verified, atomic); --skills also refreshes the mail-use skill; --check / --json only report")
+    .description("Upgrade the CLI from GitHub Releases (sha256-verified, atomic); --skills also refreshes the mail-use skill; --check only reports (--json is just the output format)")
     .option("--check", "Only report whether a newer version exists; change nothing")
     .option("--skills", "Also refresh mail-use's own skill copies (Claude Code plugin, git checkout); without it they are only listed")
     .option("--tag <vX.Y.Z>", "Install this exact release instead of the latest (also allows downgrade)")
@@ -40,16 +43,18 @@ function register(program, ctx) {
       }
       try {
         const channel = upgrade.detectInstallChannel();
-        // An explicit --json means "check, as JSON" (the family contract). JSON
-        // that only comes from stdout being a pipe does not, so a scripted
-        // `mail-use upgrade | cat` still upgrades.
-        if (opts.check || (ctx.explicitJson && !opts.skills && !opts.tag)) {
+        // Only --check is check-only. --json is an output format: agents pass
+        // it on every call, so treating it as "check" made `upgrade --json`
+        // silently report success without upgrading.
+        if (opts.check) {
           const fetchLatest = opts.tag
             ? async () => ({ tag: opts.tag, url: `https://github.com/leeguooooo/mail-use/releases/tag/${opts.tag}`, published_at: "" })
             : undefined;
           const result = await upgrade.checkForUpdate(current, fetchLatest ? { fetchLatest } : {});
           result.skills = skillRefresh.detectSkills();
           result.install_channel = channel;
+          result.upgraded = false;
+          result.checked_only = true;
           ctx.output({
             result,
             printText: () => {

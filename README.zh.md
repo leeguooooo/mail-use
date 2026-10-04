@@ -61,8 +61,8 @@ mail-use --help
 
 ```bash
 mail-use upgrade --check        # 有没有新版本（`mail-use 3.3.1 -> 3.3.2`）
-mail-use upgrade --json         # 同样的检查，输出 JSON：name、current、latest、update_available、skills、install_channel
-mail-use upgrade                # 只升 CLI：下载、校验 sha256、核对新二进制版本、原子替换、重启 daemon
+mail-use upgrade --check --json # 同样的检查，输出 JSON：name、current、latest、update_available、skills、install_channel、checked_only
+mail-use upgrade                # （--json 只改输出格式，照样升级）只升 CLI：下载、校验 sha256、核对新二进制版本、原子替换、重启 daemon
 mail-use upgrade --skills       # 同上，再刷新本工具自己的 skill（CLI 已是最新时只刷 skill）
 mail-use upgrade --tag v3.1.0   # 装指定版本（回滚也走这个）
 ```
