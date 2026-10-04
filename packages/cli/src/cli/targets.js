@@ -402,7 +402,11 @@ function filteredDryRunResult({ operation, targets, groups, markAs, permanent, s
 // by default (your own Sent/Drafts, already-Trashed, Spam). Matched on the last
 // path segment, case-insensitive.
 const SPECIAL_MUTATION_FOLDER_RE = /^(sent|sent items|drafts?|junk|spam|trash|deleted|deleted items|bin|outbox)$/i;
-function isSpecialMutationFolder(name) {
+// Special-use roles (RFC 6154) that count as special regardless of the folder's
+// (possibly localized) name, e.g. Gmail's "[Gmail]/已发邮件" is \Sent.
+const SPECIAL_MUTATION_ROLES = new Set(["\\Sent", "\\Drafts", "\\Junk", "\\Trash"]);
+function isSpecialMutationFolder(name, specialUse = "") {
+  if (SPECIAL_MUTATION_ROLES.has(String(specialUse || ""))) return true;
   const seg = String(name || "").split("/").pop().trim();
   return SPECIAL_MUTATION_FOLDER_RE.test(seg);
 }
@@ -418,6 +422,10 @@ async function searchFilteredEmailTargets(email, opts) {
     folder: searchFolder,
     limit: 1000,
     timeout_ms: 60000, // bound cross-folder filter scans so a mutation can't hang forever
+    // Gmail label aliases (INBOX + Important + Starred) are still collapsed to
+    // one target by search, so a message is not marked/trashed twice; genuine
+    // copies on other servers stay separate so every copy is acted on.
+    dedupe: false,
   });
   if (!result || !result.success) return { result, targets: [], groups: new Map(), skipped_special_folders: [] };
   let targets = (result.emails || []).filter((e) => String(e.uid || e.id || "").trim());
@@ -427,7 +435,7 @@ async function searchFilteredEmailTargets(email, opts) {
   const skipped = new Set();
   if (opts.allFolders && !opts.includeSpecial) {
     targets = targets.filter((e) => {
-      if (isSpecialMutationFolder(e.folder)) {
+      if (isSpecialMutationFolder(e.folder, e.special_use)) {
         skipped.add(e.folder);
         return false;
       }

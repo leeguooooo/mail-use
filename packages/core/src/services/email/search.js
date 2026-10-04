@@ -7,12 +7,28 @@ const { formatDateTime, firstAddress, hasAttachmentsFromBodyStructure } = requir
 const { _deadlineExceeded, _raceTimeout } = require("./deadline");
 const {
   _normalizeFolder, _gid, _listMailboxes, _selectableFoldersFor,
+  _mailboxRole, _folderCanonicalRank, _messageIdentityKey, _dedupeAcrossFolders,
   _uidsSortedDesc, _compareDatesDesc, _mapLimit, ACCOUNT_CONCURRENCY,
 } = require("./internals");
 const { PREVIEW_SOURCE_QUERY, _applyPreview } = require("./message_source");
 const { _parseDateInput } = require("./dates");
 
-async function searchEmails({ query, from = "", subject = "", account_id = "", date_from = "", date_to = "", limit = 50, offset = 0, unread_only = false, folder = "all", preview_chars = 0, timeout_ms = 0 } = {}) {
+function _isGmailAccount(acc) {
+  const host = String((acc && acc.imap && acc.imap.host) || "").toLowerCase();
+  const provider = String((acc && acc.provider) || "").toLowerCase();
+  return provider === "gmail" || host.includes("gmail") || host.includes("googlemail");
+}
+
+// Hidden per-item identity (X-GM-MSGID / EMAILID): used for cross-folder
+// dedupe, never serialized into the result.
+const _EMAIL_ID = Symbol("emailId");
+
+// dedupe: a multi-folder scan (folder=all) returns one row per message, at its
+// most canonical folder. Gmail label views (INBOX + Important + Starred + user
+// labels) are always collapsed — they are one message. dedupe=false keeps
+// genuine copies on non-label servers (a COPY into two folders is two
+// messages), which bulk mutations need so every copy is acted on.
+async function searchEmails({ query, from = "", subject = "", account_id = "", date_from = "", date_to = "", limit = 50, offset = 0, unread_only = false, folder = "all", preview_chars = 0, timeout_ms = 0, dedupe = true } = {}) {
   const previewChars = Math.max(0, Number(preview_chars || 0));
   const timeoutMs = Math.max(0, Number(timeout_ms || 0));
   const q = String(query || "").trim();
@@ -57,10 +73,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
   // dramatically more accurate. We build a Gmail query string and pass it
   // through imapflow's `gmailRaw` criterion when the account is Gmail.
   function _gmailRawFor(acc) {
-    const host = String((acc && acc.imap && acc.imap.host) || "").toLowerCase();
-    const provider = String((acc && acc.provider) || "").toLowerCase();
-    const isGmail = provider === "gmail" || host.includes("gmail") || host.includes("googlemail");
-    if (!isGmail) return null;
+    if (!_isGmailAccount(acc)) return null;
     const parts = [];
     if (q) parts.push(q.includes(" ") ? `"${q.replace(/"/g, '\\"')}"` : q);
     if (fromQ) parts.push(`from:${fromQ}`);
@@ -211,6 +224,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
             folder: folderPath,
             preview: "",
           };
+          if (msg.emailId) Object.defineProperty(item, _EMAIL_ID, { value: String(msg.emailId) });
           if (wantPreview) await _applyPreview(item, msg, previewChars);
           emails.push(item);
         }
@@ -246,10 +260,10 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
       const accountWork = withImapClient(acc, async (client) => {
         workClient = client;
         if (abandoned) abandonClient(client);
-        const folderPaths = scanAll
-          ? _selectableFoldersFor(await _listMailboxes(client))
-          : [openFolder];
+        const mailboxes = scanAll ? await _listMailboxes(client) : [];
+        const folderPaths = scanAll ? _selectableFoldersFor(mailboxes) : [openFolder];
         if (folderPaths.length === 0) folderPaths.push("INBOX");
+        const roleOf = new Map(mailboxes.map((mb) => [mb.path || mb.name || "", _mailboxRole(mb)]));
 
         let totalCombined = 0;
         const emailsCombined = [];
@@ -270,7 +284,28 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
           }
         }
 
-        const out = { success: true, total_found: totalCombined, emails: emailsCombined };
+        let emailsOut = emailsCombined;
+        let duplicatesRemoved = 0;
+        if (folderPaths.length > 1 && (dedupe || _isGmailAccount(acc))) {
+          const d = _dedupeAcrossFolders(
+            emailsCombined,
+            (e) => _messageIdentityKey(e, e[_EMAIL_ID]),
+            (f) => _folderCanonicalRank(f, roleOf.get(f) || ""),
+          );
+          emailsOut = d.emails;
+          duplicatesRemoved = d.removed;
+        }
+        // Folder names are localized ("[Gmail]/已发邮件"), so tag each row with
+        // its folder's special-use role for callers that must recognise
+        // Sent/Trash/Junk without guessing from the name.
+        for (const e of emailsOut) {
+          const role = roleOf.get(e.folder);
+          if (role) e.special_use = role;
+        }
+        // Per-folder SEARCH counts include every alias; subtract the ones we
+        // collapsed so total_found counts messages, not folder hits.
+        const out = { success: true, total_found: Math.max(0, totalCombined - duplicatesRemoved), emails: emailsOut };
+        if (duplicatesRemoved) out.duplicates_removed = duplicatesRemoved;
         if (folderErrors.length) out.folder_errors = folderErrors;
         return out;
       }, { idempotent: true });
@@ -307,6 +342,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
 
   const page = allEmails.slice(off, off + lim);
   const total_found = perAccount.reduce((sum, r) => sum + Number((r && r.total_found) || 0), 0);
+  const duplicates_removed = perAccount.reduce((sum, r) => sum + Number((r && r.duplicates_removed) || 0), 0);
   const accounts_count = targets.length;
   const search_time = (Date.now() - started) / 1000;
 
@@ -322,6 +358,7 @@ async function searchEmails({ query, from = "", subject = "", account_id = "", d
     accounts_searched: accounts_count,
     accounts_info: [],
     search_time,
+    ...(duplicates_removed ? { duplicates_removed } : {}),
     timed_out,
     ...(timed_out ? { pending_accounts, timeout_ms: timeoutMs, timed_out_note: `Search exceeded ${timeoutMs}ms and returned partial results; narrow with --account-id / --folder INBOX or raise --timeout` } : {}),
     search_params: { query: q, date_from, date_to, unread_only: unreadOnly, folder },

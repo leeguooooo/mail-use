@@ -265,7 +265,7 @@ function buildServer() {
     inputSchema: {
       to: z.array(z.string().email()).min(1),
       subject: z.string(),
-      body: z.string(),
+      body: z.string().describe("Plain-text body (HTML with is_html). Use real line breaks (JSON \"\\n\"); it is sent byte-for-byte, so a double-escaped \"\\\\n\" reaches the recipient as a literal backslash-n."),
       cc: z.array(z.string().email()).optional(),
       bcc: z.array(z.string().email()).optional(),
       account_id: accountIdOpt,

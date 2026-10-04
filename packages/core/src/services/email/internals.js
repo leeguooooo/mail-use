@@ -42,14 +42,71 @@ function _selectableFoldersFor(mailboxes) {
   for (const mb of mailboxes || []) {
     const path = mb.path || mb.name || "";
     if (!path) continue;
-    const flags = Array.isArray(mb.flags) ? mb.flags : [];
-    const flagSet = new Set(flags.map((f) => String(f)));
+    const flagSet = _mailboxFlagSet(mb);
     if (flagSet.has("\\Noselect") || flagSet.has("\\NonExistent")) continue;
     const special = String(mb.specialUse || "");
     if (special === "\\All") continue; // Gmail's "All Mail" duplicates everything else.
     out.push(path);
   }
   return out;
+}
+
+// imapflow reports LIST flags as a Set; older shapes / fixtures use an array.
+function _mailboxFlagSet(mb) {
+  const raw = mb && mb.flags;
+  if (raw instanceof Set) return new Set([...raw].map((f) => String(f)));
+  return new Set((Array.isArray(raw) ? raw : []).map((f) => String(f)));
+}
+
+// The role a mailbox plays: its special-use attribute (\Sent, \Trash, ...),
+// or \Important, which Gmail advertises as a LIST flag that imapflow does not
+// map to specialUse. "" for an ordinary (user) folder.
+function _mailboxRole(mb) {
+  const special = String((mb && mb.specialUse) || "");
+  if (special) return special;
+  return _mailboxFlagSet(mb).has("\\Important") ? "\\Important" : "";
+}
+
+// How canonical a folder is as "the" location of a message that shows up in
+// several folders (Gmail exposes every label as a folder). Lower wins: INBOX,
+// then user folders/labels, then Archive/Sent/Drafts/Junk/Trash, then the
+// label-like views (Important/Starred) and All Mail.
+const _ROLE_RANK = {
+  "\\Archive": 2, "\\Sent": 3, "\\Drafts": 4, "\\Junk": 5, "\\Trash": 6,
+  "\\Important": 7, "\\Flagged": 7, "\\All": 8,
+};
+function _folderCanonicalRank(path, role) {
+  if (String(path || "").toUpperCase() === "INBOX" || role === "\\Inbox") return 0;
+  return _ROLE_RANK[role] || 1;
+}
+
+// Identity of a message across folders of ONE account: the server's stable
+// email id (Gmail X-GM-MSGID / RFC 8474 EMAILID, which imapflow fetches as
+// emailId) when present, else the Message-ID header, else from+date+subject.
+function _messageIdentityKey(item, emailId) {
+  if (emailId) return `eid:${emailId}`;
+  const mid = String((item && item.message_id) || "").trim().toLowerCase();
+  if (mid) return `mid:${mid}`;
+  return `fds:${String(item.from || "").toLowerCase()}|${item.date || ""}|${item.subject || ""}`;
+}
+
+// Collapse the same message seen in several folders down to its most canonical
+// location. `keyOf(item)` gives the identity key, `rankOf(folder)` the folder
+// rank. Copies in the SAME folder as the winner are kept (two physical messages
+// with one Message-ID in one mailbox are not label aliases). Input order is
+// preserved. Returns { emails, removed }.
+function _dedupeAcrossFolders(emails, keyOf, rankOf) {
+  const best = new Map();
+  for (const e of emails || []) {
+    const k = keyOf(e);
+    const cur = best.get(k);
+    if (!cur || rankOf(e.folder) < rankOf(cur.folder)) best.set(k, e);
+  }
+  const out = [];
+  for (const e of emails || []) {
+    if (e.folder === best.get(keyOf(e)).folder) out.push(e);
+  }
+  return { emails: out, removed: (emails || []).length - out.length };
 }
 
 function _uidsSortedDesc(uids) {
@@ -126,6 +183,10 @@ module.exports = {
   _gid,
   _listMailboxes,
   _selectableFoldersFor,
+  _mailboxRole,
+  _folderCanonicalRank,
+  _messageIdentityKey,
+  _dedupeAcrossFolders,
   _uidsSortedDesc,
   _compareDatesDesc,
 };

@@ -148,10 +148,12 @@ Two main variants (optimized vs fallback). Keep a union of fields:
       "account": "user@example.com",
       "account_id": "acc_id",
       "folder": "INBOX",
+      "special_use": "\\Inbox",
       "preview": "optional body preview"
     }
   ],
   "total_found": 200,
+  "duplicates_removed": 13,
   "displayed": 50,
   "accounts_count": 1,
   "offset": 0,
@@ -166,6 +168,23 @@ Two main variants (optimized vs fallback). Keep a union of fields:
   "partial_success": true
 }
 ```
+Notes:
+- `--folder all` returns **one row per message**. Gmail exposes labels as folders,
+  so the same message is listed under INBOX, `[Gmail]/Important`, Starred and
+  every user label; rows are collapsed per account by the server email id
+  (Gmail `X-GM-MSGID` / RFC 8474 `EMAILID`), else `Message-ID`, else
+  from+date+subject. The surviving row is the most canonical folder: INBOX, then
+  user folders/labels, then Archive/Sent/Drafts/Junk/Trash, then Important /
+  Starred / All Mail. Dedupe happens before `limit`/`offset`, and `total_found`
+  excludes the collapsed rows. `duplicates_removed` (only when > 0) counts them.
+  A single-folder search is never deduped.
+- `special_use` (only on `--folder all` rows whose folder has one) is the
+  folder's RFC 6154 role (`\Inbox`, `\Sent`, `\Trash`, `\Important`, ...), so
+  callers can recognise localized names like `[Gmail]/已发邮件`.
+- Filtered `mark`/`delete --all-folders` searches with dedupe off for ordinary
+  IMAP servers (a real copy in two folders is two messages, and each is acted
+  on), but Gmail label aliases are still collapsed so one message is never
+  marked or trashed twice. Its special-folder skip uses `special_use` too.
 
 ### email show
 ```json
@@ -284,6 +303,17 @@ Batch or single:
 ```
 
 ### email send / reply / forward
+Body input:
+- `--body-file <path>` (send/reply) reads the body from a file; `--body-file -`
+  reads stdin. This is the robust way to pass multi-line text.
+- An inline `--body` (send/reply/forward) that contains literal `\n` (backslash +
+  n, which shell quotes do not expand) and **no** real line break is sent with
+  `\n` / `\r\n` turned into line breaks, and the result (dry-run and sent)
+  carries `warnings: ["--body had literal \\n sequences ..."]`. `--literal-body`
+  sends the value as typed. A body that already has real newlines, an escaped
+  `\\n`, and `--body-file` input are never rewritten. MCP `email_send` takes a
+  JSON string and sends it byte-for-byte.
+
 Default dry-run for send:
 ```json
 {

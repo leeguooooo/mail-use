@@ -156,7 +156,10 @@ mail-use email folders --account-id <id> --json
 ```
 
 The **gid is self-describing** (`account_id:folder:uid`), so `email show <gid>` opens the
-right mailbox with no `--folder` — even for results from `search --folder all`. The legacy
+right mailbox with no `--folder` — even for results from `search --folder all`. `--folder all`
+returns each message **once**: Gmail labels (INBOX + Important + Starred + user labels) are
+collapsed to the most canonical folder (INBOX first), and `duplicates_removed` says how many
+alias rows were dropped. The legacy
 2-part `account_id:uid` form still works (folder falls back to the cache, then INBOX).
 Gids from **different accounts** can go in one `show` call (e.g. straight from `email recent`):
 they are fetched per account in parallel and merged in the order requested; the response then
@@ -173,6 +176,14 @@ mail-use email delete <gid> --confirm --json        # default moves to Trash; pa
 mail-use email flag <gid> --set --confirm --json
 mail-use email move <gid1> <gid2> --target-folder Archive --confirm --json
 mail-use email send --to a@b.com --subject hi --body "..." --confirm --json
+# Multi-line body: pipe it on stdin (shell quotes do NOT turn "\n" into a newline).
+# A one-line --body with literal \n is auto-converted to line breaks (+ a warning);
+# --literal-body opts out.
+mail-use email send --to a@b.com --subject hi --body-file - --confirm --json <<'BODY'
+Hello,
+
+Thanks!
+BODY
 
 # Filtered batch mark/delete by sender/subject (no need to list+collect ids first):
 mail-use email delete --from newsletter@shop.com --confirm --json
@@ -187,7 +198,8 @@ grouped per account + folder (`results[]` entries carry `account_id` + `folder`)
 `groups` breakdown (per `account_id` + `folder`, with sample subjects) so you can eyeball what
 will change before `--confirm`. Filters matching >100 emails require `--confirm`.
 
-**Safety:** `--all-folders` skips special-use folders (Sent / Drafts / Junk / Trash) by
+**Safety:** `--all-folders` skips special-use folders (Sent / Drafts / Junk / Trash, recognised
+by their IMAP special-use role, so localized names like `[Gmail]/已发邮件` count) by
 default — pass `--include-special` to include them. Without `--confirm`, every destructive
 command returns a JSON dry-run preview and changes nothing.
 
