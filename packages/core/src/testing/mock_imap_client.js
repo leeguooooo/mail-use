@@ -252,6 +252,8 @@ class MockImapClient {
     const out = { uid: msg.uid };
     // imapflow always asks for EMAILID / X-GM-MSGID when the server has it.
     if (m.emailId != null) out.emailId = String(m.emailId);
+    // Gmail X-GM-LABELS: fixtures declare them per message (e.g. ["\\Inbox", "Work"]).
+    if (opts.labels) out.labels = new Set(m.labels || []);
     if (opts.envelope) out.envelope = msg.envelope;
     if (opts.flags) out.flags = msg.flags;
     if (opts.internalDate) out.internalDate = msg.internalDate;

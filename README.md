@@ -74,8 +74,8 @@ The pre-rename `@leeguoo/mailbox-cli` packages on npm are frozen and no longer u
 
 ```bash
 mail-use upgrade --check     # is there a newer release? (`mail-use 3.3.1 -> 3.3.2`)
-mail-use upgrade --json      # the same check as JSON: name, current, latest, update_available, skills, install_channel
-mail-use upgrade             # CLI only: download, verify sha256, check the new binary's version, swap atomically, restart the daemon
+mail-use upgrade --check --json  # the same check as JSON: name, current, latest, update_available, skills, install_channel, checked_only
+mail-use upgrade             # (--json only changes the output format) CLI only: download, verify sha256, check the new binary's version, swap atomically, restart the daemon
 mail-use upgrade --skills    # the same, then refresh this tool's own skill copies (skill-only when the CLI is current)
 mail-use upgrade --tag v3.1.0   # pin an exact release (also the way to roll back)
 ```

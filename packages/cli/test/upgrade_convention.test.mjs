@@ -1,5 +1,5 @@
 // The *-use family upgrade convention (leeguooooo/plugins docs/upgrade.md):
-// `upgrade --check/--json`, the daily stderr notice, and skill refresh.
+// `upgrade --check [--json]`, the daily stderr notice, and skill refresh.
 // Nothing here reaches the network, the real clock, or the real ~.
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -80,7 +80,7 @@ describe("version comparison", () => {
   });
 });
 
-describe("upgrade --json shape", () => {
+describe("upgrade --check --json shape", () => {
   it("has name, current, latest, update_available and skills", async () => {
     const result = await upgrade.checkForUpdate("3.3.1", { fetchLatest: fakeFetch("v3.3.2") });
     result.skills = skills.detectSkills({ home });

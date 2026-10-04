@@ -254,6 +254,23 @@ describe("the CLI: refusal exit code, --json channel, skills opt-in", () => {
     const j = JSON.parse(r.stdout);
     expect(j).toMatchObject({ name: "mail-use", current: "3.3.0", latest: "3.4.0", update_available: true, skills: [] });
     expect(j.install_channel).toMatchObject({ channel: "source", upgradable: false });
+    // A check says plainly that nothing was installed.
+    expect(j).toMatchObject({ upgraded: false, checked_only: true });
+  });
+
+  it("`upgrade --json` upgrades (here: refused from a source checkout), it is not a check", async () => {
+    // --json is only an output format. Before the fix it fell into the check
+    // path and returned success:true with nothing installed. A source checkout
+    // is refused before any download, so this reaches no network.
+    const home = path.join(tmp, "home");
+    fs.mkdirSync(home);
+    const r = await execa("node", [cli, "upgrade", "--json"], { env: cliEnv(home), extendEnv: false, reject: false });
+    expect(r.exitCode).toBe(1);
+    const j = JSON.parse(r.stdout);
+    expect(j).toMatchObject({ success: false, name: "mail-use" });
+    expect(j.error).toMatch(/source checkout/);
+    expect(j.install_channel).toMatchObject({ channel: "source", upgradable: false });
+    expect(j.checked_only).toBeUndefined();
   });
 
   it("`upgrade --help` documents --skills, --check and --tag", async () => {

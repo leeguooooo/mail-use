@@ -90,7 +90,7 @@ function buildServer() {
 
   server.registerTool("email_search", {
     title: "Search emails by from/subject/text/date",
-    description: "Cross-account, cross-folder search. Pass at least one of query/from/subject/date_from/date_to/unread_only. For Gmail accounts the search uses X-GM-RAW (same engine as the web UI). For QQ/163/126/sina/outlook (broken IMAP SEARCH), automatically falls back to client-side envelope filtering. Bounded by timeout_ms (default 60s) — past it returns partial results with timed_out=true; narrow with account_id/folder for speed.",
+    description: "Cross-account, cross-folder search. Pass at least one of query/from/subject/date_from/date_to/unread_only. For Gmail accounts the search uses X-GM-RAW (same engine as the web UI), and folder=all searches All Mail so archived mail is found (each hit is reported at INBOX / its label / Sent, or at All Mail when archived). For QQ/163/126/sina/outlook (broken IMAP SEARCH), automatically falls back to client-side envelope filtering. Bounded by timeout_ms (default 60s) — past it returns partial results with timed_out=true; narrow with account_id/folder for speed.",
     inputSchema: {
       query: z.string().optional().describe("Free text. Matches body+headers (Gmail X-GM-RAW; client-side fallback for broken-search providers)."),
       from: z.string().optional().describe("Substring match against sender."),
