@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "success",
+    "plan_only",
+    "decision_by",
+    "decision_required",
+    "emails",
+    "scanned",
+    "scan_limit",
+    "offset",
+    "truncated",
+    "preview_count"
+  ],
+  "properties": {
+    "success": {
+      "const": true
+    },
+    "plan_only": {
+      "const": true
+    },
+    "decision_by": {
+      "const": "agent"
+    },
+    "decision_required": {
+      "const": true
+    },
+    "emails": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "gid",
+          "account_id",
+          "folder",
+          "subject",
+          "from"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "scanned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scan_limit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "preview_count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": true
+}

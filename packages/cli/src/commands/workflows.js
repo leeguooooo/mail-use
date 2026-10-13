@@ -7,48 +7,37 @@ function registerCleanup(program, ctx) {
   const { cleanup } = ctx.proxies;
   program
     .command("cleanup")
-    .description("Classify emails and propose a deletion plan (default: plan only; --confirm to delete marketing/routine candidates)")
+    .description("Collect inbox emails for AI review; execute selected gids with email move/mark/flag/delete")
     .option("--account-id <id>", "Account id/email (omit to span all accounts)")
     .option("--folder <name>", "Folder", "INBOX")
-    .option("--limit <n>", "Scan only the newest N emails (the plan reports scan_limit + truncated)", "200")
-    .option("--unread-only", "Only classify unread emails")
-    .option("--categories <list>", "Comma-separated categories to delete on --confirm", "marketing,routine_notification")
-    .option("--permanent", "Permanently delete instead of moving to trash")
-    .option("--trash-folder <name>", "Trash folder", "Trash")
-    .option("--confirm", "Actually delete the candidate categories (default: plan only)")
-    .option("--dry-run")
+    .option("--limit <n>", "Emails per review page", "50")
+    .option("--offset <n>", "Review page offset", "0")
+    .option("--with-preview <n>", "Body preview characters (0 disables, max 2000; at most 50 emails per account)", "400")
+    .option("--unread-only", "Only return unread emails")
+    .option("--categories <list>", "Deprecated: category-based deletion is no longer supported")
+    .option("--permanent", "Deprecated: use email delete with explicitly selected gids")
+    .option("--trash-folder <name>", "Deprecated: use email delete with explicitly selected gids")
+    .option("--confirm", "Deprecated: cleanup never executes actions")
+    .option("--dry-run", "Return mail for review (cleanup is always read-only)")
     .action(async (opts) => {
-      const paging = _validatePaging(opts.limit, "0", { defaultLimit: 200 });
-      if (!paging.ok) {
-        return ctx.usage(paging.error);
+      // Reject legacy deletion requests before fetching a mailbox.
+      if ((opts.confirm && !opts.dryRun) || opts.categories != null || opts.permanent || opts.trashFolder != null) {
+        return ctx.respond(await cleanup.apply(), "cleanup");
       }
-      const confirm = Boolean(opts.confirm) && !opts.dryRun;
-      const base = {
+      const paging = _validatePaging(opts.limit, opts.offset, { defaultLimit: 50 });
+      if (!paging.ok) return ctx.usage(paging.error);
+      const preview = Number(opts.withPreview);
+      if (!Number.isInteger(preview) || preview < 0 || preview > 2000) {
+        return ctx.usage("--with-preview must be an integer between 0 and 2000");
+      }
+      return ctx.respond(await cleanup.plan({
         account_id: opts.accountId || "",
         folder: opts.folder,
         limit: paging.limit,
+        offset: paging.offset,
         unread_only: Boolean(opts.unreadOnly),
-      };
-      let result;
-      if (!confirm) {
-        result = await cleanup.plan(base);
-        if (result && typeof result === "object" && result.success) {
-          result.confirmation_required = true;
-          result.confirmation_hint = "Re-run with --confirm to delete the candidate categories";
-        }
-      } else {
-        const categories = String(opts.categories || "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        result = await cleanup.apply({
-          ...base,
-          categories,
-          permanent: Boolean(opts.permanent),
-          trash_folder: opts.trashFolder,
-        });
-      }
-      return ctx.respond(result, "cleanup");
+        preview_chars: preview,
+      }), "cleanup");
     });
 }
 

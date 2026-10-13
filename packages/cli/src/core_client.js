@@ -224,6 +224,9 @@ function _hasOutgoingAttachments(args) {
 }
 
 function _shouldBypassDaemonForCall(fullName, args) {
+  // A running older daemon may still classify mail or delete by category.
+  // Always execute the new review-only workflow in the calling CLI/MCP process.
+  if (fullName.startsWith("cleanup.") || fullName === "inbox.run") return true;
   if (fullName === "email.sendEmail") return _hasOutgoingAttachments(args);
   if (fullName === "email.replyEmail") return Boolean(args && args.dry_run === true) || _hasOutgoingAttachments(args);
   if (fullName === "email.forwardEmail") return Boolean(args && args.dry_run === true);

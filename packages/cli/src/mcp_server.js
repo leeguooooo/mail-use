@@ -131,7 +131,7 @@ function buildServer() {
       include_html: z.boolean().optional(),
       strip_urls: z.boolean().optional(),
       body_max_len: z.number().int().min(0).max(200000).optional(),
-      html_max_len: z.number().int().min(-1).max(500000).optional().describe("0 = strip HTML, -1 = unlimited, >0 = cap at N chars."),
+      html_max_len: z.number().int().min(-1).max(500000).optional().describe("0 = strip HTML, -1 = unlimited, >0 = cap at N chars."), // profile-use: allow; technical HTML character limit
     },
   }, async (args) => {
     // Resolve gids: 3-part account_id:folder:uid (preferred) or legacy account_id:uid.
@@ -324,48 +324,52 @@ function buildServer() {
 
   if (typeof inbox.run === "function") {
     server.registerTool("inbox_organize", {
-      title: "Auto-categorize inbox (delete spam/marketing, mark read, flag attention)",
-      description: "Returns categorization buckets without acting. Reports per-bucket counts.",
+      title: "Collect inbox emails for AI review",
+      description: "Read-only email metadata and body previews. The calling AI decides relevance and actions, reads full messages with email_show, then executes explicit gids using email_move, email_mark, email_flag or email_delete. No automatic classification.",
       inputSchema: {
         account_id: accountIdOpt,
         folder: folderOpt,
         limit: limitOpt,
         unread_only: z.boolean().optional(),
+        offset: offsetOpt,
+        preview_chars: z.number().int().min(0).max(2000).optional().describe("Body preview characters; default 400. Use pages of at most 50 per account for previews."),
       },
     }, async (args) => _toolResult(await inbox.run({
       account_id: args.account_id || "",
       folder: args.folder || "INBOX",
       limit: args.limit || 15,
       unread_only: Boolean(args.unread_only),
-    })));
+      offset: args.offset || 0,
+      preview_chars: args.preview_chars ?? 400,
+    }), false));
   }
 
   if (typeof cleanup.plan === "function") {
     server.registerTool("cleanup", {
-      title: "Classify emails and plan/apply a cleanup",
-      description: "Rule-based classifier into protected_finance/protected_travel/security/support_case/action_required (never deleted; action_required = subjects signalling required action, alerts, deadlines, expiry, suspension, deletion or failed payment) vs marketing/routine_notification (cleanup candidates) vs unknown. Scans only the newest `limit` emails (default 200); the plan reports scan_limit and truncated=true when the folder holds more. Returns a plan by default (read-only). DESTRUCTIVE when confirm=true: deletes the marketing/routine_notification candidates (moved to trash unless permanent=true).",
+      title: "Collect emails for AI cleanup decisions",
+      description: "Read-only email collection for the calling AI to review. Returns emails with gids and body previews, scan limits and pagination. No keyword categorization or automatic deletion. Read full messages with email_show and execute selected gids with email_move/mark/flag/delete. Legacy confirm or category deletion requests fail with explicit_selection_required.",
       inputSchema: {
         account_id: accountIdOpt,
         folder: folderOpt,
         limit: limitOpt,
         unread_only: z.boolean().optional(),
-        confirm: z.boolean().optional().describe("Apply the plan (delete candidates). Default false = plan only."),
-        permanent: z.boolean().optional().describe("Permanently delete instead of moving to trash."),
-        categories: z.array(z.enum(["marketing", "routine_notification"])).optional().describe("Which candidate categories to delete on confirm. Default both."),
+        offset: offsetOpt,
+        preview_chars: z.number().int().min(0).max(2000).optional().describe("Body preview characters; default 400. Use pages of at most 50 per account for previews."),
+        confirm: z.boolean().optional().describe("Deprecated: true is rejected; use email_delete with selected gids."),
+        permanent: z.boolean().optional().describe("Deprecated: use email_delete with selected gids."),
+        categories: z.array(z.string()).optional().describe("Deprecated: category selection is rejected."),
       },
     }, async (args) => {
+      if (args.confirm || args.permanent || args.categories != null) return _toolResult(await cleanup.apply(), false);
       const base = {
         account_id: args.account_id || "",
         folder: args.folder || "INBOX",
-        limit: args.limit || 200,
+        limit: args.limit || 50,
         unread_only: Boolean(args.unread_only),
+        offset: args.offset || 0,
+        preview_chars: args.preview_chars ?? 400,
       };
-      if (!args.confirm) return _toolResult(await cleanup.plan(base), false);
-      return _toolResult(await cleanup.apply({
-        ...base,
-        categories: args.categories,
-        permanent: Boolean(args.permanent),
-      }), false);
+      return _toolResult(await cleanup.plan(base), false);
     });
   }
 

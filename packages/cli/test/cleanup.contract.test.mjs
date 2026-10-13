@@ -1,202 +1,129 @@
 import { createRequire } from "node:module";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { execa } from "execa";
 import path from "node:path";
 import fs from "node:fs";
-
-import { defaultAuth, testEnv, writeAuthJson } from "./_helpers.mjs";
+import Ajv from "ajv";
+import { defaultAuth, readSchema, testEnv, writeAuthJson } from "./_helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const { classify, loadRules, PROTECTED, CLEANUP, _resetRulesCache } = require("@mail-use/workflows").classify;
+const { email } = require("@mail-use/core");
+const { cleanup, inbox } = require("@mail-use/workflows");
+const cliBin = path.join(import.meta.dirname, "..", "bin", "mail-use.js");
 
-function tmpRoot(name) {
-  return path.join(import.meta.dirname, ".tmp", name);
+async function cli(args) {
+  const root = path.join(import.meta.dirname, ".tmp", "cleanup_agent_review");
+  const env = testEnv(root);
+  writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
+  const r = await execa("node", [cliBin, ...args, "--json"], { reject: false, env });
+  return { code: r.exitCode, payload: JSON.parse(r.stdout) };
 }
-function cliBin() {
-  return path.join(import.meta.dirname, "..", "bin", "mail-use.js");
-}
 
-describe("WP-G: classifier", () => {
-  it("buckets emails into the categories with protected taking priority", () => {
-    expect(classify({ from: "service@paypal.com", subject: "Your receipt" })).toBe("protected_finance");
-    // protected_travel wins over marketing even though info@ is a marketing sender
-    expect(classify({ from: "info@ana.co.jp", subject: "Your booking confirmation" })).toBe("protected_travel");
-    expect(classify({ from: "no-reply@accounts.google.com", subject: "Security alert: new sign-in" })).toBe("security");
-    expect(classify({ from: "support@acme.com", subject: "[Case #123] update" })).toBe("support_case");
-    expect(classify({ from: "news@shop.com", subject: "Weekly newsletter" })).toBe("marketing");
-    expect(classify({ from: "noreply@app.com", subject: "System notification" })).toBe("routine_notification");
-    expect(classify({ from: "bob@example.com", subject: "lunch?" })).toBe("unknown");
-  });
-});
+afterEach(() => vi.restoreAllMocks());
 
-describe("WP-G: cleanup workflow (CLI)", () => {
-  it("plan classifies the mock inbox and lists cleanup candidates (read-only)", async () => {
-    const root = tmpRoot("cleanup_plan");
-    fs.rmSync(root, { recursive: true, force: true });
-    const env = testEnv(root);
-    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
-
-    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--json"], { reject: false, env });
-    expect(r.exitCode).toBe(0);
-    const p = JSON.parse(r.stdout);
-    expect(p.success).toBe(true);
-    expect(p.plan_only).toBe(true);
-    // mock 102 is from news@example.com → marketing candidate; 101 → unknown.
-    expect(p.candidates_by_category.marketing.map((e) => e.id)).toContain("102");
-    expect(p.by_category).toHaveProperty("unknown");
-    expect(p.confirmation_required).toBe(true);
+describe("AI-driven mail review", () => {
+  it("returns content and gids without choosing actions from misleading subjects", async () => {
+    const emails = [
+      { id: "1", gid: "a:INBOX:1", subject: "marketing spam unsubscribe", unread: true, preview: "Please review this failed payment." },
+      { id: "2", gid: "b:Archive:1", subject: "Your receipt", unread: false, preview: "A promotion, not a transaction." },
+    ];
+    const read = vi.spyOn(email, "listEmails").mockResolvedValue({ success: true, emails, total_in_folder: 2 });
+    const remove = vi.spyOn(email, "deleteEmails");
+    const p = await cleanup.plan();
+    expect(p).toMatchObject({ success: true, plan_only: true, decision_required: true, decision_by: "agent", emails, preview_count: 2 });
+    expect(p.candidates_by_category).toEqual({});
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ preview_chars: 400, use_cache: false }));
+    const organized = await inbox.run();
+    expect(organized.emails).toEqual(emails);
+    expect(Object.values(organized.actions).flat()).toEqual([]);
+    expect(remove).not.toHaveBeenCalled();
   });
 
-  it("apply deletes the candidate categories and reports deleted_count", async () => {
-    const root = tmpRoot("cleanup_apply");
-    fs.rmSync(root, { recursive: true, force: true });
-    const env = testEnv(root);
-    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
-
-    const r = await execa(
-      "node",
-      [cliBin(), "cleanup", "--account-id", "mock_acc", "--categories", "marketing", "--confirm", "--json"],
-      { reject: false, env }
-    );
-    expect(r.exitCode).toBe(0);
-    const out = JSON.parse(r.stdout);
-    expect(out.applied).toBe(true);
-    expect(out.categories).toEqual(["marketing"]);
-    expect(out.deleted_count).toBe(1); // 102 moved to trash
-  });
-});
-
-describe("cleanup: action-required / alert mail is protected", () => {
-  // Real subjects that were classified routine_notification (= deletable)
-  // because they come from a noreply@ notification address.
-  const cloudflare = "noreply@notify.cloudflare.com";
-  const protectedSubjects = [
-    "[需要操作] 恢复 jryuukin.jp 的名称服务器",
-    "[警报] jryuukin.jp 已删除",
-    "[警报] D1 每日操作限制已达到 76%",
-    "[Action Required] Verify your domain nameservers",
-    "Action required: update your payment method",
-    "[Alert] Worker CPU limit exceeded",
-    "Your domain example.com expires in 7 days",
-    "Your account has been suspended",
-    "Scheduled deletion of inactive project",
-    "Final notice: invoice overdue",
-    "Payment failed for your subscription",
-    "需要采取措施：域名即将到期",
-    "【要対応】ドメイン設定の確認",
-    "ご対応のお願い",
-    "【重要】サービス停止のお知らせ",
-    "紧急：服务器宕机",
-    "お支払い期限のご案内",
-    "督促状",
-    "未納のお知らせ",
-  ];
-
-  for (const subject of protectedSubjects) {
-    it(`never a cleanup candidate: ${subject}`, () => {
-      const cat = classify({ from: cloudflare, subject });
-      expect(PROTECTED.has(cat)).toBe(true);
-      expect(CLEANUP.has(cat)).toBe(false);
-    });
-  }
-
-  it("lands in action_required (not routine_notification) for noreply alerts", () => {
-    expect(classify({ from: cloudflare, subject: "[需要操作] 恢复 jryuukin.jp 的名称服务器" })).toBe("action_required");
-    expect(classify({ from: cloudflare, subject: "[警报] jryuukin.jp 已删除" })).toBe("action_required");
-    expect(classify({ from: cloudflare, subject: "[警报] D1 每日操作限制已达到 76%" })).toBe("action_required");
-    // Plain noreply notifications are still routine.
-    expect(classify({ from: cloudflare, subject: "Weekly analytics summary notification" })).toBe("routine_notification");
+  it("legacy apply fails before reading or deleting mail", async () => {
+    const read = vi.spyOn(email, "listEmails");
+    const remove = vi.spyOn(email, "deleteEmails");
+    expect(await cleanup.apply({ categories: ["marketing"], permanent: true })).toMatchObject({ success: false, error_code: "explicit_selection_required" });
+    expect(read).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 
-  it("action_required beats marketing signals (unsubscribe header, promo sender)", () => {
-    expect(classify({ from: "news@shop.com", subject: "Action required: confirm your order", list_unsubscribe: "<mailto:x@y>" })).toBe("action_required");
+  it("does not turn unknown folder counts into zero or pretend a preview exists", async () => {
+    vi.spyOn(email, "listEmails").mockResolvedValue({ success: true, emails: [{ gid: "a:INBOX:1" }], total_in_folder: null });
+    const p = await cleanup.plan({ limit: 1 });
+    expect(p.truncated).toBe(true);
+    expect(p.preview_count).toBe(0);
   });
 
-  it("cleanup_rules.json can override action_required (arrays replace defaults)", () => {
-    const root = tmpRoot("cleanup_rules_override");
-    fs.rmSync(root, { recursive: true, force: true });
-    const configDir = path.join(root, "config");
-    fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(configDir, "cleanup_rules.json"),
-      JSON.stringify({ action_required: { subjects: ["please respond"], senders: ["alerts@"] } }),
-    );
-    const saved = { c: process.env.MAILBOX_CONFIG_DIR, d: process.env.MAILBOX_DATA_DIR };
-    process.env.MAILBOX_CONFIG_DIR = configDir;
-    process.env.MAILBOX_DATA_DIR = path.join(root, "data");
-    try {
-      _resetRulesCache();
-      const rules = loadRules();
-      expect(classify({ from: "noreply@x.com", subject: "Please respond by Friday" }, rules)).toBe("action_required");
-      expect(classify({ from: "alerts@monitor.io", subject: "daily digest" }, rules)).toBe("action_required");
-      // Replaced, not concatenated: a default-only keyword no longer matches.
-      expect(classify({ from: "noreply@x.com", subject: "Payment failed" }, rules)).toBe("routine_notification");
-    } finally {
-      _resetRulesCache();
-      if (saved.c === undefined) delete process.env.MAILBOX_CONFIG_DIR;
-      else process.env.MAILBOX_CONFIG_DIR = saved.c;
-      if (saved.d === undefined) delete process.env.MAILBOX_DATA_DIR;
-      else process.env.MAILBOX_DATA_DIR = saved.d;
+  it("reports pagination against unread scope and propagates fetch errors", async () => {
+    const read = vi.spyOn(email, "listEmails").mockResolvedValue({ success: true, emails: [{ gid: "a:INBOX:2" }], total_in_folder: 20, unread_count: 2 });
+    const p = await cleanup.plan({ limit: 1, offset: 1, unread_only: true });
+    expect(p.truncated).toBe(false);
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ offset: 1, unread_only: true }));
+    const failure = { success: false, error: "Fixture failure", error_code: "network_error" };
+    read.mockResolvedValue(failure);
+    expect(await cleanup.plan()).toEqual(failure);
+  });
+
+  it("normalizes paging metadata and avoids a non-advancing zero-limit page hint", async () => {
+    const read = vi.spyOn(email, "listEmails").mockResolvedValue({ success: true, emails: [{ gid: "a:INBOX:2" }], total_in_folder: 3, limit: 1, offset: 1 });
+    expect(await cleanup.plan({ limit: "1", offset: "1" })).toMatchObject({ scan_limit: 1, offset: 1, truncated: true, scan_note: expect.stringContaining("use offset 2") });
+    read.mockResolvedValue({ success: true, emails: [], total_in_folder: 3, limit: 0, offset: 0 });
+    expect(await cleanup.plan({ limit: 0 })).toMatchObject({ scanned: 0, truncated: true, scan_note: expect.stringContaining("positive limit") });
+  });
+
+  it.each(["cleanup", "inbox"])("%s preserves review decisions and coverage in compact and lean output", async (command) => {
+    for (const format of [["--format", "compact"], ["--lean"]]) {
+      const { code, payload } = await cli([command, "--account-id", "mock_acc", "--limit", "1", "--offset", "1", ...format]);
+      expect(code).toBe(0);
+      expect(payload).toMatchObject({ plan_only: true, decision_by: "agent", decision_required: true, scanned: 1, scan_limit: 1, offset: 1, truncated: true, preview_count: 1 });
+      expect(payload.emails[0].gid).toBeTruthy();
+      expect(payload.scan_note).toContain("use offset 2");
     }
   });
-});
 
-describe("cleanup: scan limit is surfaced", () => {
-  it("reports scan_limit and truncated=true when the folder holds more than --limit", async () => {
-    const root = tmpRoot("cleanup_scan_limit");
-    fs.rmSync(root, { recursive: true, force: true });
-    const env = testEnv(root);
-    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
-
-    // The mock INBOX holds 3 emails.
-    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--limit", "2", "--json"], { reject: false, env });
-    expect(r.exitCode).toBe(0);
-    const p = JSON.parse(r.stdout);
-    expect(p.scanned).toBe(2);
-    expect(p.scan_limit).toBe(2);
-    expect(p.total_in_folder).toBe(3);
-    expect(p.truncated).toBe(true);
-    expect(p.scan_note).toMatch(/--limit/);
+  it("CLI returns review data and scan limits", async () => {
+    const { code, payload } = await cli(["cleanup", "--account-id", "mock_acc", "--limit", "2"]);
+    expect(code).toBe(0);
+    expect(payload).toMatchObject({ success: true, decision_required: true, scanned: 2, scan_limit: 2, total_in_folder: 3, truncated: true });
+    const validate = new Ajv().compile(readSchema("cleanup.schema.json"));
+    expect(validate(payload), JSON.stringify(validate.errors)).toBe(true);
+    expect(payload.emails).toHaveLength(2);
+    expect(payload.emails.every((e) => e.gid)).toBe(true);
+    expect(payload.candidate_count).toBe(0);
+    expect(payload).not.toHaveProperty("confirmation_hint");
+    const next = await cli(["cleanup", "--account-id", "mock_acc", "--limit", "2", "--offset", "2"]);
+    expect(next.payload.scanned).toBe(1);
+    expect(next.payload.truncated).toBe(false);
   });
 
-  it("truncated=false when everything fit", async () => {
-    const root = tmpRoot("cleanup_scan_full");
+  it.each([
+    ["--confirm"],
+    ["--categories", "marketing", "--confirm"],
+    ["--categories", "marketing"],
+    ["--permanent"],
+    ["--trash-folder", "Trash"],
+  ])("CLI rejects legacy mutation options %j even without configured accounts", async (...options) => {
+    const root = path.join(import.meta.dirname, ".tmp", "cleanup_no_accounts");
     fs.rmSync(root, { recursive: true, force: true });
-    const env = testEnv(root);
-    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
-
-    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--json"], { reject: false, env });
-    const p = JSON.parse(r.stdout);
-    expect(p.scan_limit).toBe(200);
-    expect(p.truncated).toBe(false);
-    expect(p).not.toHaveProperty("scan_note");
+    const r = await execa("node", [cliBin, "cleanup", ...options, "--json"], { reject: false, env: testEnv(root) });
+    expect(r.exitCode).toBe(1);
+    expect(JSON.parse(r.stdout)).toMatchObject({ success: false, error_code: "explicit_selection_required" });
   });
 
-  it("unread-only: truncated compares against the unread count, not the folder size", async () => {
-    const root = tmpRoot("cleanup_scan_unread");
-    fs.rmSync(root, { recursive: true, force: true });
-    const env = testEnv(root);
-    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
-
-    // The mock INBOX holds 3 emails, 1 of them unread.
-    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--unread-only", "--limit", "1", "--json"], { reject: false, env });
-    const p = JSON.parse(r.stdout);
-    expect(p.scanned).toBe(1);
-    expect(p.total_in_folder).toBe(3);
-    expect(p.truncated).toBe(false);
-    expect(p).not.toHaveProperty("scan_note");
+  it("dry-run overrides confirm and never returns an executable category plan", async () => {
+    const { code, payload } = await cli(["cleanup", "--confirm", "--dry-run", "--account-id", "mock_acc"]);
+    expect(code).toBe(0);
+    expect(payload.plan_only).toBe(true);
+    expect(payload.candidates_by_category).toEqual({});
   });
 
-  it("--confirm keeps total_in_folder in the applied plan", async () => {
-    const root = tmpRoot("cleanup_apply_total");
-    fs.rmSync(root, { recursive: true, force: true });
-    const env = testEnv(root);
-    writeAuthJson(env.MAILBOX_CONFIG_DIR, defaultAuth());
-
-    const r = await execa("node", [cliBin(), "cleanup", "--account-id", "mock_acc", "--limit", "2", "--confirm", "--json"], { reject: false, env });
-    const p = JSON.parse(r.stdout);
-    expect(p.applied).toBe(true);
-    expect(p.plan.total_in_folder).toBe(3);
-    expect(p.plan.truncated).toBe(true);
+  it("review commands validate previews and offsets", async () => {
+    for (const command of ["cleanup", "inbox"]) {
+      for (const options of [["--with-preview", "bad"], ["--with-preview", "2001"], ["--offset", "-1"]]) {
+        const r = await cli([command, ...options]);
+        expect(r.code).toBe(2);
+        expect(r.payload.success).toBe(false);
+      }
+    }
   });
 });

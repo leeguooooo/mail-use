@@ -350,7 +350,10 @@ async function listEmails({
   const ok = results.filter((r) => r.success);
   const allEmails = ok.flatMap((r) => r.emails || []);
   allEmails.sort((a, b) => _compareDatesDesc(a.date, b.date));
-  const emails = lim > 0 ? allEmails.slice(off, off + lim) : [];
+  // A single-account live fetch already applied the offset. Only merged
+  // multi-account results still need the global page offset here.
+  const pageOffset = account_id ? 0 : off;
+  const emails = lim > 0 ? allEmails.slice(pageOffset, pageOffset + lim) : [];
 
   const returnedByAccount = new Map();
   for (const e of emails) {

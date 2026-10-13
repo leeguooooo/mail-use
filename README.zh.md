@@ -241,6 +241,11 @@ session 变多不会让 IMAP 连接变多。macOS 上连着 3 个账号时的实
 
 ## AI 集成说明
 
+邮件分类和取舍由调用 mail-use 的 AI 判断。`mail-use cleanup --limit 50 --json`
+返回邮件信息、正文预览和 gid，`--offset` 翻页，`email show <gid...>` 读取完整内容。
+AI 选定具体 gid 后，用 `email move`、`mark`、`flag` 或 `delete` 执行。
+`cleanup` 和 `inbox` 只提供资料，不按关键词分类或决定操作；旧的按类别清理调用会返回错误。
+
 - `docs/AI_SKILL_MAIL_USE.md`
 
 ## OpenClaw 集成
@@ -289,4 +294,4 @@ openclaw skills check
 
 ## 作者
 
-**郭立（Guo Li / leeguoo）** 开发 —— [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · 更多工具见 [*-use 家族](https://github.com/leeguooooo/plugins)。
+**郭立（Guo Li / leeguoo）** 开发 —— [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · 更多工具见 [*-use 家族](https://github.com/leeguooooo/plugins)。 <!-- profile-use: allow; existing public author attribution -->

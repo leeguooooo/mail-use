@@ -267,6 +267,12 @@ Knobs, if the defaults do not suit you:
 
 ## AI usage guide
 
+Mail classification belongs to the calling AI. `mail-use cleanup --limit 50 --json`
+returns live metadata, body previews and gids for review; use `--offset` for the
+next page and `email show <gid...>` for full content. The AI selects specific gids
+and executes them with `email move`, `mark`, `flag` or `delete`. `cleanup` and
+`inbox` never classify or choose actions, and legacy category cleanup is rejected.
+
 If you're integrating this CLI into an AI agent, start here:
 
 - `docs/AI_SKILL_MAIL_USE.md`
@@ -345,4 +351,4 @@ to teach your agent, JSON on stdout.
 
 ## Author
 
-Built by **郭立 (Guo Li / leeguoo)** — [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · more tools in the [*-use family](https://github.com/leeguooooo/plugins).
+Built by **郭立 (Guo Li / leeguoo)** — [leeguoo.com](https://leeguoo.com/about) · [GitHub](https://github.com/leeguooooo) · [X](https://x.com/leeguooooo) · more tools in the [*-use family](https://github.com/leeguooooo/plugins). <!-- profile-use: allow; existing public author attribution -->

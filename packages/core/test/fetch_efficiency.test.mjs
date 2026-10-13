@@ -96,4 +96,15 @@ describe("C11: fetch only what is needed, once", () => {
     const listFetch = getMockCalls().find((c) => c.op === "fetch");
     expect(listFetch.opts.source).toEqual({ start: 0, maxLength: PREVIEW_SOURCE_BYTES });
   });
+
+  it("single-account live pages advance once and retain previews", async () => {
+    const first = await email.listEmails({ account_id: "mock_acc", limit: 2, offset: 0, preview_chars: 5, use_cache: false });
+    const next = await email.listEmails({ account_id: "mock_acc", limit: 2, offset: 2, preview_chars: 5, use_cache: false });
+    expect(first.emails).toHaveLength(2);
+    expect(next.emails).toHaveLength(1);
+    expect(next.emails[0].gid).not.toBe(first.emails[0].gid);
+    expect(next.emails[0].gid).not.toBe(first.emails[1].gid);
+    expect(next.emails[0].preview).toBeDefined();
+    expect(next.offset).toBe(2);
+  });
 });

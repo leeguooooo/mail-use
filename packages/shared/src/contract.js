@@ -107,6 +107,19 @@ const COMPACT_TOP_LEVEL_KEEP = new Set([
   "failed_ids",
   "limit",
   "offset",
+  // Review workflows need their decision boundary and coverage even when
+  // email records are projected into the compact agent format.
+  "plan_only",
+  "decision_by",
+  "decision_required",
+  "scanned",
+  "scan_limit",
+  "truncated",
+  "scan_note",
+  "preview_count",
+  "next_step",
+  "processed",
+  "total_in_folder",
   "returned",
   "requested",
   "unread_in_result",
@@ -184,7 +197,7 @@ function leanResult(result) {
   if (!result || typeof result !== "object") return result;
   const out = {};
   for (const [k, v] of Object.entries(result)) {
-    if (LEAN_DROP_TOP_LEVEL.has(k)) continue;
+    if (LEAN_DROP_TOP_LEVEL.has(k) && !(k === "offset" && result.decision_required === true)) continue;
     // Drop empty arrays / objects to save tokens.
     if (Array.isArray(v) && v.length === 0 && k !== "emails" && k !== "accounts") continue;
     if (v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0) continue;

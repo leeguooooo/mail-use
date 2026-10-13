@@ -645,80 +645,66 @@ Single account (`--account-id`):
 { "success": true, "fetch": { "...": "..." }, "notify": { "...": "..." } }
 ```
 
-## inbox
+## inbox / cleanup — AI review
 
-### inbox (organizer)
-```json
-{
-  "success": true,
-  "processed": 15,
-  "actions": {
-    "delete_spam": [],
-    "delete_marketing": [],
-    "mark_as_read": [],
-    "needs_attention": []
-  },
-  "important_summaries": [],
-  "summary_text": "summary text",
-  "stats": {
-    "total_emails": 15,
-    "delete_spam": 0,
-    "delete_marketing": 0,
-    "mark_as_read": 0,
-    "needs_attention": 0
-  },
-  "generated_at": "2025-01-01T00:00:00Z"
-}
-```
+Both commands return live mail metadata and body previews. The calling AI decides
+what each message means and which actions match the user's request. No model runs
+inside the program and no keyword classifier selects mutations.
 
-## cleanup
-
-### cleanup (plan, default)
 ```json
 {
   "success": true,
   "plan_only": true,
-  "scanned": 200,
-  "scan_limit": 200,
+  "decision_required": true,
+  "decision_by": "agent",
+  "emails": [
+    { "gid": "account:INBOX:123", "account_id": "account", "folder": "INBOX",
+      "subject": "...", "from": "...", "date": "...", "unread": true,
+      "preview": "...", "preview_truncated": true }
+  ],
+  "scanned": 50,
+  "scan_limit": 50,
+  "offset": 0,
   "total_in_folder": 4312,
   "truncated": true,
-  "scan_note": "Classified only the newest 200 of 4312 emails (scan limit 200); pass --limit (MCP: limit) to scan more.",
-  "folder": "INBOX",
-  "account_id": "",
-  "by_category": { "marketing": 40, "routine_notification": 25, "action_required": 3, "unknown": 132 },
-  "candidates_by_category": {
-    "marketing": [ { "id": "1", "gid": "acc_id:INBOX:1", "account_id": "acc_id", "folder": "INBOX", "from": "...", "subject": "...", "date": "...", "unread": false } ]
-  },
-  "candidate_count": 65,
-  "protected_counts": { "action_required": 3 },
-  "protected_total": 3,
-  "confirmation_required": true,
-  "confirmation_hint": "Re-run with --confirm to delete the candidate categories"
+  "scan_note": "Returned 50 emails at offset 0; use offset 50 to review the next page.",
+  "preview_count": 50,
+  "next_step": "Read full messages as needed and execute explicitly selected gids."
 }
 ```
-- Categories: `protected_finance`, `protected_travel`, `security`, `support_case`,
-  `action_required` (protected: never candidates) vs `marketing`,
-  `routine_notification` (candidates) vs `unknown`.
-- `action_required` covers subjects that ask for action or carry an alert,
-  deadline, expiry, suspension, deletion or failed payment ("Action Required",
-  "[Alert]", "expir", "suspend", "final notice", "payment failed", "需要操作",
-  "警报", "紧急", "重要", "要対応", "ご対応", "期限", "督促", "未納", ...). It is
-  checked before the marketing / routine rules, so a `noreply@` alert is
-  protected. Overridable like the other groups in
-  `<configDir>/cleanup_rules.json` (`action_required.subjects` / `senders` /
-  `domains`; arrays replace the defaults).
-- Only the newest `--limit` (default 200) emails are classified.
-  `scan_limit` echoes it; `truncated: true` (plus `scan_note`) means the folder
-  holds more than was scanned. `total_in_folder` is omitted when unknown.
 
-### cleanup --confirm
+- `cleanup` defaults to 50 emails; `inbox` defaults to 15. CLI options:
+  `--limit`, `--offset`, `--account-id`, `--folder`, `--unread-only`,
+  `--with-preview` (0–2000 characters, default 400). MCP tools `cleanup` and
+  `inbox_organize` accept `offset` and `preview_chars` with the same behavior.
+- `emails` preserves list metadata, including gids, attachment indicators and
+  previews when available. Previews require at most 50 fetched messages per
+  account; bigger fetches may omit them. `preview_count` reports actual coverage.
+  Use `email show <gid...>` / `email_show` to read full content before deciding.
+- `truncated` reports whether there may be more mail beyond this page. In
+  unread-only mode it uses the unread count. Unknown server totals are not zero.
+- Existing cleanup fields `by_category`, `candidates_by_category`,
+  `protected_counts` remain empty objects, `candidate_count` and `protected_total`
+  remain zero. These compatibility placeholders are not classification results.
+- `inbox` retains `processed`, empty `actions` arrays, `important_summaries` and
+  `stats` (action counts zero). `decision_required` means the AI has not supplied
+  an action decision; unread messages are not automatically marked or flagged.
+- CLI `cleanup --confirm`, category flags and mutation flags fail before any mail
+  lookup. MCP `confirm: true`, `categories`, or `permanent: true` and workflow
+  `cleanup.apply` likewise fail with `explicit_selection_required`.
+- Execution uses existing `email move`, `mark`, `flag`, `delete` (or corresponding
+  MCP tools) with specific gids. Dry-run and confirmation behavior is unchanged.
+- Review workflows execute locally even when an older daemon is running, so that
+  the old daemon cannot reintroduce keyword classification or category deletion.
+- Compact and lean review output preserve the decision boundary, scan coverage,
+  preview count and page offset. Compact email snippets use `body_text_preview`.
+- `--limit 0` returns no emails; when more mail exists, the scan note asks for a
+  positive limit instead of suggesting a non-advancing offset.
+
 ```json
 {
-  "success": true,
-  "applied": true,
-  "categories": ["marketing", "routine_notification"],
-  "deleted_count": 65,
-  "plan": { "scanned": 200, "scan_limit": 200, "truncated": true, "scan_note": "...", "by_category": {}, "candidate_count": 65, "protected_counts": {} },
-  "results": [ { "account_id": "acc_id", "folder": "INBOX", "success": true, "deleted_count": 65 } ]
+  "success": false,
+  "error_code": "explicit_selection_required",
+  "error": "Cleanup no longer selects or deletes emails by category. Review cleanup.emails, read full messages with email show, then pass the selected gids to email move, mark, flag or delete."
 }
 ```

@@ -1,27 +1,76 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["success", "processed", "actions", "stats"],
+  "required": [
+    "success",
+    "processed",
+    "actions",
+    "stats",
+    "plan_only",
+    "decision_by",
+    "decision_required",
+    "emails"
+  ],
   "properties": {
-    "success": { "type": "boolean" },
+    "success": {
+      "type": "boolean"
+    },
     "error": {
-    "oneOf": [
-      { "type": "string" },
-      {
-        "type": "object",
-        "required": ["code", "message"],
-        "properties": {
-          "code": { "type": "string" },
-          "message": { "type": "string" },
-          "detail": {}
+      "oneOf": [
+        {
+          "type": "string"
         },
+        {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "detail": {}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "processed": {
+      "type": "number"
+    },
+    "actions": {
+      "type": "object"
+    },
+    "stats": {
+      "type": "object"
+    },
+    "plan_only": {
+      "const": true
+    },
+    "decision_by": {
+      "const": "agent"
+    },
+    "decision_required": {
+      "const": true
+    },
+    "emails": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "gid",
+          "account_id",
+          "folder",
+          "subject",
+          "from"
+        ],
         "additionalProperties": true
       }
-    ]
-  },
-    "processed": { "type": "number" },
-    "actions": { "type": "object" },
-    "stats": { "type": "object" }
+    }
   },
   "additionalProperties": true
 }

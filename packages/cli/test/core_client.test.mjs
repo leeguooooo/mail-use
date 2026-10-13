@@ -33,6 +33,19 @@ describe("daemon call timeout", () => {
   });
 });
 
+describe("review workflows and daemon version skew", () => {
+  it("never dispatches review or legacy cleanup deletion to an older daemon", async () => {
+    const client = freshClient();
+    for (const name of ["cleanup.plan", "cleanup.apply", "inbox.run"]) {
+      expect(client._shouldBypassDaemonForCall(name, {})).toBe(true);
+    }
+    expect(client._shouldBypassDaemonForCall("email.listEmails", {})).toBe(false);
+    expect(await client.makeProxies().cleanup.apply({ categories: ["marketing"] })).toMatchObject({
+      success: false, error_code: "explicit_selection_required",
+    });
+  });
+});
+
 describe("daemon connect", () => {
   let dir;
   let server;

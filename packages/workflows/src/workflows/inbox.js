@@ -1,55 +1,17 @@
-const { email } = require("@mail-use/core");
+// Compatibility entry point for AI-driven inbox review. No keyword decisions.
+const { plan } = require("./cleanup");
 
-function _iso() {
-  return new Date().toISOString();
-}
-
-async function run({ limit = 15, folder = "INBOX", unread_only = false, account_id = "" } = {}) {
-  const list = await email.listEmails({
-    limit: Number(limit || 15),
-    offset: 0,
-    unread_only: Boolean(unread_only),
-    folder,
-    account_id,
-    use_cache: false,
-  });
-  if (!list.success) return list;
-
-  const emails = list.emails || [];
-  const actions = {
-    delete_spam: [],
-    delete_marketing: [],
-    mark_as_read: [],
-    needs_attention: [],
-  };
-
-  for (const e of emails) {
-    const subj = String(e.subject || "").toLowerCase();
-    if (subj.includes("unsubscribe") || subj.includes("marketing")) actions.delete_marketing.push(e.id);
-    else if (subj.includes("spam")) actions.delete_spam.push(e.id);
-    else if (e.unread) actions.needs_attention.push(e.id);
-    else actions.mark_as_read.push(e.id);
-  }
-
-  const stats = {
-    total_emails: emails.length,
-    delete_spam: actions.delete_spam.length,
-    delete_marketing: actions.delete_marketing.length,
-    mark_as_read: actions.mark_as_read.length,
-    needs_attention: actions.needs_attention.length,
-  };
-
+async function run(args = {}) {
+  const result = await plan({ ...args, limit: args.limit ?? 15 });
+  if (!result.success) return result;
   return {
-    success: true,
-    processed: emails.length,
-    actions,
+    ...result,
+    processed: result.scanned,
+    actions: { delete_spam: [], delete_marketing: [], mark_as_read: [], needs_attention: [] },
     important_summaries: [],
-    summary_text: `Processed ${emails.length} emails.`,
-    stats,
-    generated_at: _iso(),
+    summary_text: `Returned ${result.scanned} emails for agent review. No actions selected.`,
+    stats: { total_emails: result.scanned, delete_spam: 0, delete_marketing: 0, mark_as_read: 0, needs_attention: 0 },
   };
 }
 
-module.exports = {
-  run,
-};
+module.exports = { run };

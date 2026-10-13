@@ -17,17 +17,28 @@ Use these tags/keywords for discovery:
 - Extended tags (npm/GitHub topics):
   - `search`, `attachments`, `digest`, `monitor`, `ai`
 
-## Install (npm)
+## Install (GitHub Releases)
 
 Install the published CLI:
 
 ```bash
-npm install -g @leeguoo/mail-use
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/mail-use/main/install.sh | sh
 mail-use --help
 mail-use --version
 ```
 
-This npm package ships prebuilt binaries per platform (no Python required).
+GitHub Releases ship prebuilt binaries per platform (no Node or Python required).
+
+## Email review and migration
+
+`mail-use cleanup --limit 50 --with-preview 400 --json` and `inbox` return
+emails for the calling agent to judge. They never classify messages or select
+mutations. Read full messages with `email show` where needed, then use the
+approved, explicit gids with `email move`, `mark`, `flag`, or `delete`.
+Legacy category cleanup, including `cleanup --confirm`, is rejected with
+`explicit_selection_required`. Older binaries still have keyword cleanup:
+use list/show on those versions until upgraded. Compact and lean review output
+retain decision flags, preview coverage and pagination metadata.
 
 ## Configuration files
 
