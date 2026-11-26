@@ -5,6 +5,48 @@ function _stripUrls(text) {
   return String(text || "").replace(/https?:\/\/\S+/gi, "[link]");
 }
 
+const _VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+
+// True when an opening tag hides its element inline: style display:none or
+// visibility:hidden, or the bare `hidden` attribute.
+function _isHiddenTag(tag) {
+  const style = tag.match(/\sstyle\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
+  if (style && /(^|[;"'\s])(display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(style[1])) return true;
+  const bare = tag.replace(/=\s*("[^"]*"|'[^']*'|[^\s>]+)/g, "=");
+  return /\shidden(?=[\s/>=])/i.test(bare);
+}
+
+// Drop elements a mail client would not show (see _isHiddenTag), with their
+// contents. Mail that hides text from the reader is aimed at whatever reads the
+// source instead, so the derived body should match what the user would see.
+// An unclosed hidden element hides the rest of the document. It fails closed,
+// on purpose, since the derived body is what the agent acts on.
+function _dropHiddenElements(html) {
+  const tagRe = /<(\/?)([a-zA-Z][\w:-]*)\b[^>]*>/g;
+  let out = "";
+  let last = 0;
+  let hidden = null; // { name, depth } of the open hidden element
+  let m;
+  while ((m = tagRe.exec(html))) {
+    const closing = m[1] === "/";
+    const name = m[2].toLowerCase();
+    const opensBlock = !closing && !_VOID_TAGS.has(name) && !/\/\s*>$/.test(m[0]);
+    if (!hidden) {
+      if (closing || !_isHiddenTag(m[0])) continue;
+      out += html.slice(last, m.index) + " ";
+      last = tagRe.lastIndex;
+      if (opensBlock) hidden = { name, depth: 1 };
+    } else if (name === hidden.name) {
+      if (opensBlock) hidden.depth += 1;
+      else if (closing && --hidden.depth === 0) {
+        hidden = null;
+        last = tagRe.lastIndex;
+      }
+    }
+  }
+  return hidden ? out : out + html.slice(last);
+}
+
 // Dependency-free HTML -> plain text. Good enough to give an agent a readable
 // body for HTML-only mail (transactional senders, Moomoo, etc.) without shelling
 // out to a parser. Not a sanitizer; output is plain text only.
@@ -12,6 +54,7 @@ function _htmlToText(html) {
   let s = String(html || "");
   s = s.replace(/<!--[\s\S]*?-->/g, " ");
   s = s.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ");
+  s = _dropHiddenElements(s);
   s = s.replace(/<\/(p|div|li|tr|h[1-6]|blockquote|section|article|header|footer|table|ul|ol)>/gi, "\n");
   s = s.replace(/<br\s*\/?>/gi, "\n");
   s = s.replace(/<[^>]+>/g, " ");
